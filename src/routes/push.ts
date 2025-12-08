@@ -12,16 +12,18 @@ router.post('/register', asyncHandler(async (req, res) => {
   const user = req.user as { sub: string } | undefined;
   if (!user?.sub) {
     console.log('[Push Register] Usuario no autenticado');
-    return res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Unauthorized' });
+    res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Unauthorized' });
+    return;
   }
 
   const { token, platform: rawPlatform } = req.body as { token?: string; platform?: string };
   
   if (!token) {
     console.log('[Push Register] Token no proporcionado');
-    return res.status(StatusCodes.BAD_REQUEST).json({ 
+    res.status(StatusCodes.BAD_REQUEST).json({ 
       error: 'Token is required' 
     });
+    return;
   }
 
   // Normalizar platform: solo aceptar 'android', 'ios', o null
@@ -108,6 +110,37 @@ router.post('/register', asyncHandler(async (req, res) => {
   }
 }));
 
+// Tipo para la respuesta OAuth2 de Google
+interface OAuth2TokenResponse {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+}
+
+// Tipo para la respuesta de error de FCM v1 API
+interface FCMErrorResponse {
+  error?: {
+    code?: number;
+    message?: string;
+    status?: string;
+  };
+}
+
+// Tipo para la respuesta exitosa de FCM v1 API
+interface FCMSuccessResponse {
+  name: string;
+}
+
+// Tipo para la respuesta de la API legacy de FCM
+interface FCMLegacyResponse {
+  success: number;
+  failure?: number;
+  results?: Array<{
+    message_id?: string;
+    error?: string;
+  }>;
+}
+
 // Obtener token de acceso OAuth2 para FCM v1 API
 async function getAccessToken(serviceAccountKey: any): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
@@ -140,7 +173,7 @@ async function getAccessToken(serviceAccountKey: any): Promise<string> {
     throw new Error(`Error obteniendo access token: ${response.status} - ${errorText}`);
   }
 
-  const result = await response.json();
+  const result = await response.json() as OAuth2TokenResponse;
   return result.access_token;
 }
 
@@ -211,7 +244,7 @@ export async function sendPush(tokens: string[], title: string, body: string, da
           );
 
           if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
+            const errorData = await response.json().catch(() => ({})) as FCMErrorResponse;
             const errorMessage = errorData?.error?.message || await response.text();
             
             // Detectar tokens inválidos
@@ -228,7 +261,7 @@ export async function sendPush(tokens: string[], title: string, body: string, da
             throw new Error(`FCM v1 error: ${response.status} - ${errorMessage}`);
           }
 
-          const result = await response.json();
+          const result = await response.json() as FCMSuccessResponse;
           return { token, success: true, messageId: result.name };
         })
       );
@@ -357,7 +390,7 @@ export async function sendPush(tokens: string[], title: string, body: string, da
           throw new Error(`FCM error: ${response.status} - ${errorText}`);
         }
 
-        const result = await response.json();
+        const result = await response.json() as FCMLegacyResponse;
         
         // FCM retorna success: 1 si fue exitoso, 0 si falló
         if (result.success === 0) {

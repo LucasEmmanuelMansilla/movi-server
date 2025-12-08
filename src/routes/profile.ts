@@ -98,8 +98,8 @@ router.get('/me', asyncHandler(async (req, res) => {
 
     // Si el email no viene de la BD, obtenerlo del JWT
     const response = {
-      ...data,
-      email: data.email || user.email || null,
+      ...(data as Record<string, any>),
+      email: (data as Record<string, any>).email || user.email || null,
     };
 
     res.json(response);
@@ -173,8 +173,8 @@ router.put('/me', asyncHandler(async (req, res) => {
       }
 
       const response = {
-        ...currentData,
-        email: currentData.email || userWithEmail.email || null,
+        ...(currentData as Record<string, any>),
+        email: (currentData as Record<string, any>).email || userWithEmail.email || null,
       };
       
       res.json(response);
