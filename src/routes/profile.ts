@@ -55,7 +55,6 @@ router.get('/me', asyncHandler(async (req, res) => {
     if (error) {
       // Si el error es por columnas que no existen, intentar con campos básicos
       if (error.code === '42703' || error.message?.includes('does not exist')) {
-        console.log('⚠️ Algunos campos no existen aún, usando campos básicos');
         const { data: basicData, error: basicError } = await admin
           .from('profiles')
           .select('id, role, full_name, phone, created_at')
@@ -105,7 +104,6 @@ router.get('/me', asyncHandler(async (req, res) => {
 
     res.json(response);
   } catch (error) {
-    console.error('Error fetching profile:', error);
     res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
       error: 'Failed to fetch profile' 
     });
@@ -200,7 +198,6 @@ router.put('/me', asyncHandler(async (req, res) => {
     } catch (updateError: any) {
       // Si falla por campos que no existen, intentar solo con campos básicos
       if (updateError.code === '42703' || updateError.message?.includes('does not exist')) {
-        console.log('⚠️ Algunos campos no existen aún, actualizando solo campos básicos');
         
         const basicUpdateFields: Record<string, any> = {};
         if (updateData.full_name !== undefined) basicUpdateFields.full_name = updateData.full_name || null;
@@ -306,7 +303,6 @@ router.put('/me', asyncHandler(async (req, res) => {
 
     res.json(response);
   } catch (error) {
-    console.error('Error updating profile:', error);
     res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
       error: 'Failed to update profile' 
     });
@@ -367,14 +363,10 @@ router.post('/me/location', asyncHandler(async (req, res) => {
       .eq('id', user.sub);
 
     if (error) {
-      // Si falla por campos que no existen, intentar guardar en una tabla separada
-      // Por ahora solo logueamos el error
-      console.warn('⚠️ Campos de ubicación no existen en profiles, ignorando actualización');
     }
 
     res.status(StatusCodes.NO_CONTENT).send();
   } catch (error) {
-    console.error('Error updating location:', error);
     res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
       error: 'Failed to update location' 
     });

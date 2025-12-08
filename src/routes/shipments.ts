@@ -17,6 +17,19 @@ const CreateShipmentBody = z.object({
   pickup_address: addressSchema,
   dropoff_address: addressSchema,
   price: priceSchema.optional(),
+  location: z.object({
+    coords: z.object({
+      accuracy: z.number(),
+      altitude: z.number(),
+      altitudeAccuracy: z.number(),
+      heading: z.number(),
+      latitude: z.number(),
+      longitude: z.number(),
+      speed: z.number(),
+    }),
+    mocked: z.boolean(),
+    timestamp: z.number(),
+  }).optional(),
 });
 
 // ✅ Crear envío (solo business)
@@ -45,22 +58,33 @@ router.post('/', validateBody(CreateShipmentBody), asyncHandler(async (req, res)
     return;
   }
 
-  // Parsear dirección para obtener coordenadas si están disponibles
-  const parsedPickup = parseAddressWithCoordinates(body.pickup_address);
-  let pickupLat: number | undefined = parsedPickup.lat;
-  let pickupLng: number | undefined = parsedPickup.lng;
+  // Obtener coordenadas: prioridad 1 = location.coords, 2 = pickup_address parseado, 3 = geocodificar
+  let pickupLat: number | undefined;
+  let pickupLng: number | undefined;
+  let pickupAddress: string = body.pickup_address; // Dirección formateada para notificaciones
 
-  // Si no hay coordenadas, intentar geocodificar la dirección
-  if (!pickupLat || !pickupLng) {
-    try {
-      const coords = await geocodeAddress(parsedPickup.address);
-      if (coords) {
-        pickupLat = coords.lat;
-        pickupLng = coords.lng;
+  if (body.location?.coords) {
+    pickupLat = body.location.coords.latitude;
+    pickupLng = body.location.coords.longitude;
+    // Parsear la dirección para obtener el formato correcto
+    const parsedPickup = parseAddressWithCoordinates(body.pickup_address);
+    pickupAddress = parsedPickup.address;
+  } else {
+    const parsedPickup = parseAddressWithCoordinates(body.pickup_address);
+    pickupAddress = parsedPickup.address;
+    pickupLat = parsedPickup.lat;
+    pickupLng = parsedPickup.lng;
+
+    if (!pickupLat || !pickupLng) {
+      try {
+        const coords = await geocodeAddress(parsedPickup.address);
+        if (coords) {
+          pickupLat = coords.lat;
+          pickupLng = coords.lng;
+        }
+      } catch (geocodeError) {
+        logger.warn('Error geocodificando dirección de pickup', { error: geocodeError });
       }
-    } catch (geocodeError) {
-      logger.warn('Error geocodificando dirección de pickup', { error: geocodeError });
-      // Continuar sin coordenadas, las notificaciones se enviarán a todos los drivers disponibles
     }
   }
 
@@ -120,7 +144,7 @@ router.post('/', validateBody(CreateShipmentBody), asyncHandler(async (req, res)
             await sendPush(
               pushTokens,
               'Nuevo envío disponible',
-              `${body.title} - Recoger en: ${parsedPickup.address}`
+              `${body.title} - Recoger en: ${pickupAddress}`
             );
             logger.info('Notificaciones enviadas a drivers cercanos', { 
               shipmentId: data.id, 
@@ -130,15 +154,15 @@ router.post('/', validateBody(CreateShipmentBody), asyncHandler(async (req, res)
         } else {
           // Si no hay drivers cercanos, notificar a todos los drivers disponibles
           logger.info('No hay drivers cercanos, notificando a todos los drivers', { shipmentId: data.id });
-          await notifyAllAvailableDrivers(admin, body.title, parsedPickup.address, data.id);
+          await notifyAllAvailableDrivers(admin, body.title, pickupAddress, data.id);
         }
       } else {
         // Si no hay ubicaciones de drivers, notificar a todos
-        await notifyAllAvailableDrivers(admin, body.title, parsedPickup.address, data.id);
+        await notifyAllAvailableDrivers(admin, body.title, pickupAddress, data.id);
       }
     } else {
       // Si no hay coordenadas, notificar a todos los drivers disponibles
-      await notifyAllAvailableDrivers(admin, body.title, parsedPickup.address, data.id);
+      await notifyAllAvailableDrivers(admin, body.title, pickupAddress, data.id);
     }
   } catch (notifyError) {
     logger.error('Error enviando notificaciones a drivers', notifyError as Error, { shipmentId: data.id });
@@ -287,7 +311,23 @@ const AcceptShipmentParams = z.object({
   id: z.string().uuid('ID de envío inválido'),
 });
 
-router.post('/:id/accept', validateParams(AcceptShipmentParams), asyncHandler(async (req, res) => {
+const AcceptShipmentBody = z.object({
+  location: z.object({
+    coords: z.object({
+      accuracy: z.number(),
+      altitude: z.number(),
+      altitudeAccuracy: z.number(),
+      heading: z.number(),
+      latitude: z.number(),
+      longitude: z.number(),
+      speed: z.number(),
+    }),
+    mocked: z.boolean(),
+    timestamp: z.number(),
+  }).optional(),
+});
+
+router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(AcceptShipmentBody), asyncHandler(async (req, res) => {
   const user = req.user as { sub: string; role?: Role } | undefined;
   if (!user?.sub) {
     logger.warn('Intento de aceptar envío sin autenticación');
@@ -372,6 +412,24 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), asyncHandler(as
     note: 'Driver assigned', 
     created_by: user.sub 
   });
+
+  // Actualizar ubicación del driver si se proporciona
+  if (req.body.location?.coords) {
+    try {
+      await admin
+        .from('profiles')
+        .update({
+          latitude: req.body.location.coords.latitude,
+          longitude: req.body.location.coords.longitude,
+          last_location_updated: new Date().toISOString(),
+        })
+        .eq('id', user.sub);
+      logger.info('Ubicación del driver actualizada al aceptar envío', { driverId: user.sub, shipmentId });
+    } catch (locationError) {
+      logger.warn('Error al actualizar ubicación del driver', { error: locationError, driverId: user.sub });
+      // No fallamos si hay error al actualizar ubicación
+    }
+  }
 
   // Obtener información del envío y del driver para las notificaciones
   const { data: shipmentInfo } = await admin
@@ -551,74 +609,74 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
     
     if (tokens && tokens.length > 0) {
       // Crear mensajes personalizados según el estado
-    let title = 'Actualización de envío';
-    let body = '';
-
-    switch (status) {
-      case 'picked_up':
-        title = 'Envío recogido';
-        body = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido recogido. Está en camino a su destino.`;
-        break;
-      case 'in_transit':
-        title = 'Envío en tránsito';
-        body = `El envío "${shipmentInfo?.title || 'Sin título'}" está en camino hacia: ${shipmentInfo?.dropoff_address || 'el destino'}`;
-        break;
-      case 'delivered':
-        title = 'Envío entregado';
-        body = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido entregado exitosamente en: ${shipmentInfo?.dropoff_address || 'el destino'}`;
-        break;
-      case 'cancelled':
-        title = 'Envío cancelado';
-        body = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido cancelado.`;
-        break;
-      default:
-        body = `Nuevo estado: ${status}`;
-    }
-
-    // Separar tokens por usuario para enviar notificaciones personalizadas
-    const ownerTokens = tokens
-      .filter(t => t.user_id === shipment.created_by)
-      .map(t => t.token);
-    
-    const driverTokens = assign?.driver_id
-      ? tokens
-          .filter(t => t.user_id === assign.driver_id)
-          .map(t => t.token)
-      : [];
-
-    // Notificar al dueño (business)
-    if (ownerTokens.length > 0) {
-      await sendPush(ownerTokens, title, body);
-    }
-
-    // Notificar al driver con mensajes específicos
-    if (driverTokens.length > 0) {
-      let driverTitle = title;
-      let driverBody = '';
+      let title = 'Actualización de envío';
+      let body = '';
 
       switch (status) {
         case 'picked_up':
-          driverTitle = '¡Bien hecho!';
-          driverBody = `Has recogido el envío "${shipmentInfo?.title || 'Sin título'}". Dirígete al destino: ${shipmentInfo?.dropoff_address || 'la dirección indicada'}`;
+          title = 'Envío recogido';
+          body = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido recogido. Está en camino a su destino.`;
           break;
         case 'in_transit':
-          driverTitle = 'En camino';
-          driverBody = `Continúa hacia: ${shipmentInfo?.dropoff_address || 'el destino'} con el envío "${shipmentInfo?.title || 'Sin título'}"`;
+          title = 'Envío en tránsito';
+          body = `El envío "${shipmentInfo?.title || 'Sin título'}" está en camino hacia: ${shipmentInfo?.dropoff_address || 'el destino'}`;
           break;
         case 'delivered':
-          driverTitle = '¡Entrega completada!';
-          driverBody = `Has entregado exitosamente el envío "${shipmentInfo?.title || 'Sin título'}" en: ${shipmentInfo?.dropoff_address || 'el destino'}`;
+          title = 'Envío entregado';
+          body = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido entregado exitosamente en: ${shipmentInfo?.dropoff_address || 'el destino'}`;
           break;
         case 'cancelled':
-          driverTitle = 'Envío cancelado';
-          driverBody = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido cancelado.`;
+          title = 'Envío cancelado';
+          body = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido cancelado.`;
           break;
         default:
-          driverBody = body;
+          body = `Nuevo estado: ${status}`;
       }
 
-      await sendPush(driverTokens, driverTitle, driverBody);
-    }
+      // Separar tokens por usuario para enviar notificaciones personalizadas
+      const ownerTokens = tokens
+        .filter(t => t.user_id === shipment.created_by)
+        .map(t => t.token);
+      
+      const driverTokens = assign?.driver_id
+        ? tokens
+            .filter(t => t.user_id === assign.driver_id)
+            .map(t => t.token)
+        : [];
+
+      // Notificar al dueño (business)
+      if (ownerTokens.length > 0) {
+        await sendPush(ownerTokens, title, body);
+      }
+
+      // Notificar al driver con mensajes específicos
+      if (driverTokens.length > 0) {
+        let driverTitle = title;
+        let driverBody = '';
+
+        switch (status) {
+          case 'picked_up':
+            driverTitle = '¡Bien hecho!';
+            driverBody = `Has recogido el envío "${shipmentInfo?.title || 'Sin título'}". Dirígete al destino: ${shipmentInfo?.dropoff_address || 'la dirección indicada'}`;
+            break;
+          case 'in_transit':
+            driverTitle = 'En camino';
+            driverBody = `Continúa hacia: ${shipmentInfo?.dropoff_address || 'el destino'} con el envío "${shipmentInfo?.title || 'Sin título'}"`;
+            break;
+          case 'delivered':
+            driverTitle = '¡Entrega completada!';
+            driverBody = `Has entregado exitosamente el envío "${shipmentInfo?.title || 'Sin título'}" en: ${shipmentInfo?.dropoff_address || 'el destino'}`;
+            break;
+          case 'cancelled':
+            driverTitle = 'Envío cancelado';
+            driverBody = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido cancelado.`;
+            break;
+          default:
+            driverBody = body;
+        }
+
+        await sendPush(driverTokens, driverTitle, driverBody);
+      }
 
       logger.info('Notificaciones de actualización de estado enviadas', { 
         shipmentId, 

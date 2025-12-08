@@ -15,6 +15,9 @@ const envSchema = z.object({
 
   // Opcionales
   EXPO_ACCESS_TOKEN: z.string().optional(),
+  FCM_SERVER_KEY: z.string().optional(), // Server Key de Firebase Cloud Messaging (Legacy - deprecated)
+  FCM_PROJECT_ID: z.string().optional(), // Project ID de Firebase (para API v1)
+  FCM_SERVICE_ACCOUNT_KEY: z.string().optional(), // Service Account JSON key (para API v1)
   ALLOWED_ORIGINS: z.string().optional(),
 })
 
