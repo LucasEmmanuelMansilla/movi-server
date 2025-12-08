@@ -55,6 +55,9 @@ export type Database = {
           id: string
           phone: string | null
           role: string
+          latitude: number | null
+          longitude: number | null
+          last_location_updated: string | null
         }
         Insert: {
           created_at?: string
@@ -62,6 +65,9 @@ export type Database = {
           id: string
           phone?: string | null
           role: string
+          latitude?: number | null
+          longitude?: number | null
+          last_location_updated?: string | null
         }
         Update: {
           created_at?: string
@@ -69,6 +75,9 @@ export type Database = {
           id?: string
           phone?: string | null
           role?: string
+          latitude?: number | null
+          longitude?: number | null
+          last_location_updated?: string | null
         }
         Relationships: []
       }

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { createAdminClient } from '../lib/supabase';
 import type { Role, ShipmentStatus } from '../types';
+import type { TablesUpdate } from '../supabase.types';
 import { sendPush } from './push';
 import { StatusCodes } from 'http-status-codes';
 import asyncHandler from 'express-async-handler';
@@ -416,13 +417,14 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
   // Actualizar ubicación del driver si se proporciona
   if (req.body.location?.coords) {
     try {
+      const updateData: TablesUpdate<'profiles'> = {
+        latitude: req.body.location.coords.latitude,
+        longitude: req.body.location.coords.longitude,
+        last_location_updated: new Date().toISOString(),
+      };
       await admin
         .from('profiles')
-        .update({
-          latitude: req.body.location.coords.latitude,
-          longitude: req.body.location.coords.longitude,
-          last_location_updated: new Date().toISOString(),
-        })
+        .update(updateData)
         .eq('id', user.sub);
       logger.info('Ubicación del driver actualizada al aceptar envío', { driverId: user.sub, shipmentId });
     } catch (locationError) {
