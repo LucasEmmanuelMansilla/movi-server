@@ -656,94 +656,71 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
     .single();
 
   // Notificar a los usuarios relevantes con mensajes específicos según el estado
+  // IMPORTANTE: Si el driver actualiza el estado, solo notificar al business owner (NO al driver)
+  // Si el business owner actualiza el estado, solo notificar al driver
   try {
-    const notifyUsers = new Set<string>([shipment.created_by]);
-    if (assign?.driver_id) {
-      notifyUsers.add(assign.driver_id);
+    // Determinar a quién notificar basado en quién hizo el cambio
+    let userIdToNotify: string | null = null;
+    
+    if (isDriver) {
+      // Si el driver actualiza el estado, solo notificar al business owner
+      userIdToNotify = shipment.created_by;
+    } else if (isOwner && assign?.driver_id) {
+      // Si el business owner actualiza el estado, notificar al driver
+      userIdToNotify = assign.driver_id;
     }
 
-    const { data: tokens } = await admin
-      .from('push_tokens')
-      .select('token, user_id')
-      .in('user_id', Array.from(notifyUsers));
-    
-    if (tokens && tokens.length > 0) {
-      // Crear mensajes personalizados según el estado
-      let title = 'Actualización de envío';
-      let body = '';
-
-      switch (status) {
-        case 'picked_up':
-          title = 'Envío recogido';
-          body = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido recogido. Está en camino a su destino.`;
-          break;
-        case 'in_transit':
-          title = 'Envío en tránsito';
-          body = `El envío "${shipmentInfo?.title || 'Sin título'}" está en camino hacia: ${shipmentInfo?.dropoff_address || 'el destino'}`;
-          break;
-        case 'delivered':
-          title = 'Envío entregado';
-          body = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido entregado exitosamente en: ${shipmentInfo?.dropoff_address || 'el destino'}`;
-          break;
-        case 'cancelled':
-          title = 'Envío cancelado';
-          body = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido cancelado.`;
-          break;
-        default:
-          body = `Nuevo estado: ${status}`;
-      }
-
-      // Separar tokens por usuario para enviar notificaciones personalizadas
-      const ownerTokens = tokens
-        .filter(t => t.user_id === shipment.created_by)
-        .map(t => t.token);
+    if (!userIdToNotify) {
+      logger.info('No hay usuarios para notificar', { shipmentId, status, isDriver, isOwner });
+    } else {
+      const { data: tokens } = await admin
+        .from('push_tokens')
+        .select('token')
+        .eq('user_id', userIdToNotify);
       
-      const driverTokens = assign?.driver_id
-        ? tokens
-            .filter(t => t.user_id === assign.driver_id)
-            .map(t => t.token)
-        : [];
-
-      // Notificar al dueño (business)
-      if (ownerTokens.length > 0) {
-        await sendPush(ownerTokens, title, body);
-      }
-
-      // Notificar al driver con mensajes específicos
-      if (driverTokens.length > 0) {
-        let driverTitle = title;
-        let driverBody = '';
+      if (!tokens || tokens.length === 0) {
+        logger.info('No hay tokens de push disponibles para notificar', { 
+          shipmentId, 
+          userId: userIdToNotify 
+        });
+      } else {
+        const pushTokens = tokens.map(t => t.token);
+        
+        // Crear mensajes personalizados según el estado
+        let title = 'Actualización de envío';
+        let body = '';
 
         switch (status) {
           case 'picked_up':
-            driverTitle = '¡Bien hecho!';
-            driverBody = `Has recogido el envío "${shipmentInfo?.title || 'Sin título'}". Dirígete al destino: ${shipmentInfo?.dropoff_address || 'la dirección indicada'}`;
+            title = 'Envío recogido';
+            body = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido recogido. Está en camino a su destino.`;
             break;
           case 'in_transit':
-            driverTitle = 'En camino';
-            driverBody = `Continúa hacia: ${shipmentInfo?.dropoff_address || 'el destino'} con el envío "${shipmentInfo?.title || 'Sin título'}"`;
+            title = 'Envío en tránsito';
+            body = `El envío "${shipmentInfo?.title || 'Sin título'}" está en camino hacia: ${shipmentInfo?.dropoff_address || 'el destino'}`;
             break;
           case 'delivered':
-            driverTitle = '¡Entrega completada!';
-            driverBody = `Has entregado exitosamente el envío "${shipmentInfo?.title || 'Sin título'}" en: ${shipmentInfo?.dropoff_address || 'el destino'}`;
+            title = 'Envío entregado';
+            body = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido entregado exitosamente en: ${shipmentInfo?.dropoff_address || 'el destino'}`;
             break;
           case 'cancelled':
-            driverTitle = 'Envío cancelado';
-            driverBody = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido cancelado.`;
+            title = 'Envío cancelado';
+            body = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido cancelado.`;
             break;
           default:
-            driverBody = body;
+            body = `Nuevo estado: ${status}`;
         }
 
-        await sendPush(driverTokens, driverTitle, driverBody);
+        await sendPush(pushTokens, title, body);
+        
+        logger.info('Notificación de actualización de estado enviada', { 
+          shipmentId, 
+          status,
+          updatedBy: isDriver ? 'driver' : 'owner',
+          notifiedUserId: userIdToNotify,
+          tokensCount: pushTokens.length
+        });
       }
-
-      logger.info('Notificaciones de actualización de estado enviadas', { 
-        shipmentId, 
-        status,
-        ownerTokens: ownerTokens.length,
-        driverTokens: driverTokens.length
-      });
     }
   } catch (pushError) {
     logger.error('Error al enviar notificaciones push', pushError as Error, { shipmentId });
