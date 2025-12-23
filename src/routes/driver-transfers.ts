@@ -139,11 +139,11 @@ router.get('/pending', authMiddleware, asyncHandler(async (req, res) => {
   // Filtrar pagos que no tienen transferencia
   const paymentsWithoutTransfer = [];
   for (const payment of approvedPayments || []) {
-    const { data: transfer } = await admin
-      .from('driver_transfers')
+    const { data: transfer } = await (admin
+      .from('driver_transfers' as any)
       .select('id')
       .eq('payment_id', payment.id)
-      .maybeSingle();
+      .maybeSingle() as any);
 
     if (!transfer) {
       // Obtener driver_id del envío
@@ -383,13 +383,13 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
   }
 
   const total = transfers?.length || 0;
-  const pending = transfers?.filter(t => t.status === 'pending').length || 0;
-  const completed = transfers?.filter(t => t.status === 'completed').length || 0;
-  const failed = transfers?.filter(t => t.status === 'failed').length || 0;
+  const pending = transfers?.filter((t: any) => t.status === 'pending').length || 0;
+  const completed = transfers?.filter((t: any) => t.status === 'completed').length || 0;
+  const failed = transfers?.filter((t: any) => t.status === 'failed').length || 0;
   
-  const totalAmount = transfers?.reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0) || 0;
-  const pendingAmount = transfers?.filter(t => t.status === 'pending').reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0) || 0;
-  const completedAmount = transfers?.filter(t => t.status === 'completed').reduce((sum, t) => sum + parseFloat(t.amount.toString()), 0) || 0;
+  const totalAmount = transfers?.reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
+  const pendingAmount = transfers?.filter((t: any) => t.status === 'pending').reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
+  const completedAmount = transfers?.filter((t: any) => t.status === 'completed').reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
 
   res.json({
     total,

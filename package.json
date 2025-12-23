@@ -9,9 +9,7 @@
     "dev": "tsx watch src/index.ts",
     "test": "jest",
     "lint": "eslint . --ext .ts",
-    "format": "prettier --write \"src/**/*.ts\"",
-    "ngrok:url": "node scripts/get-ngrok-url.js",
-    "ngrok:update-env": "node scripts/update-env-ngrok.js"
+    "format": "prettier --write \"src/**/*.ts\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",

@@ -571,33 +571,7 @@ router.get('/success', asyncHandler(async (req, res) => {
               }, 200);
             }
             
-            // Detectar si estamos en la página de advertencia de ngrok (solo en desarrollo)
-            // En producción, esto nunca debería ser true
-            const isNgrokWarning = window.location.hostname.includes('ngrok') && (
-              document.body.textContent.includes('You are about to visit') || 
-              document.body.textContent.includes('ngrok') ||
-              document.querySelector('a[href*="ngrok"]') !== null
-            );
-            
-            if (isNgrokWarning) {
-              // Buscar el botón "Visit Site" y hacer clic automáticamente
-              const visitButton = document.querySelector('button, a[href*="visit"], [onclick*="visit"], a[class*="button"]');
-              if (visitButton) {
-                // Esperar a que se cargue completamente y hacer clic
-                setTimeout(function() {
-                  visitButton.click();
-                  // Después de hacer clic, esperar un momento y redirigir al deep link
-                  setTimeout(openDeepLink, 1000);
-                }, 500);
-                return;
-              }
-              
-              // Si no encontramos el botón, intentar redirigir directamente
-              setTimeout(openDeepLink, 500);
-              return;
-            }
-            
-            // Si no estamos en ngrok, redirigir inmediatamente al deep link
+            // Redirigir inmediatamente al deep link
             openDeepLink();
             
             // Fallback: si no funciona en unos segundos, mostrar mensaje
@@ -686,23 +660,7 @@ router.get('/failure', asyncHandler(async (req, res) => {
               }, 200);
             }
             
-            const isNgrokWarning = document.body.textContent.includes('You are about to visit') || 
-                                   document.body.textContent.includes('ngrok') ||
-                                   document.querySelector('a[href*="ngrok"]') !== null;
-            
-            if (isNgrokWarning) {
-              const visitButton = document.querySelector('button, a[href*="visit"], [onclick*="visit"], a[class*="button"]');
-              if (visitButton) {
-                setTimeout(function() {
-                  visitButton.click();
-                  setTimeout(openDeepLink, 1000);
-                }, 500);
-                return;
-              }
-              setTimeout(openDeepLink, 500);
-              return;
-            }
-            
+            // Redirigir inmediatamente al deep link
             openDeepLink();
             
             setTimeout(function() {
@@ -790,23 +748,7 @@ router.get('/pending', asyncHandler(async (req, res) => {
               }, 200);
             }
             
-            const isNgrokWarning = document.body.textContent.includes('You are about to visit') || 
-                                   document.body.textContent.includes('ngrok') ||
-                                   document.querySelector('a[href*="ngrok"]') !== null;
-            
-            if (isNgrokWarning) {
-              const visitButton = document.querySelector('button, a[href*="visit"], [onclick*="visit"], a[class*="button"]');
-              if (visitButton) {
-                setTimeout(function() {
-                  visitButton.click();
-                  setTimeout(openDeepLink, 1000);
-                }, 500);
-                return;
-              }
-              setTimeout(openDeepLink, 500);
-              return;
-            }
-            
+            // Redirigir inmediatamente al deep link
             openDeepLink();
             
             setTimeout(function() {
