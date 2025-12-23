@@ -9,6 +9,8 @@ import { authRouter } from './routes/auth';
 import { shipmentRouter } from './routes/shipments';
 import { pushRouter } from './routes/push';
 import { profileRouter } from './routes/profile';
+import { paymentRouter } from './routes/payments';
+import { driverTransfersRouter } from './routes/driver-transfers';
 import { authMiddleware } from './middleware/auth';
 import { apiRateLimiter, authRateLimiter } from './middleware/rateLimiter';
 import { logger } from './utils/logger';
@@ -66,6 +68,8 @@ app.use('/auth', authRateLimiter, authRouter);
 app.use('/shipments', apiRateLimiter, authMiddleware, shipmentRouter);
 app.use('/push', apiRateLimiter, authMiddleware, pushRouter);
 app.use('/profile', apiRateLimiter, authMiddleware, profileRouter);
+app.use('/payments', apiRateLimiter, paymentRouter); // Algunos endpoints requieren auth (se aplica dentro)
+app.use('/driver-transfers', apiRateLimiter, authMiddleware, driverTransfersRouter);
 
 // Error handling middleware
 app.use((err: any, req: Request, res: Response, _next: NextFunction) => {

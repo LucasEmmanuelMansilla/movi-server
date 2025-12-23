@@ -13,6 +13,14 @@ const envSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1, "Falta SUPABASE_SERVICE_ROLE_KEY"),
   SUPABASE_JWT_SECRET: z.string().min(1, "Falta SUPABASE_JWT_SECRET").optional(),
 
+  // Mercado Pago
+  MERCADOPAGO_ACCESS_TOKEN: z.string().optional(),
+  MERCADOPAGO_PUBLIC_KEY: z.string().optional(),
+  COMMISSION_PERCENTAGE: z.string().default('10'), // Porcentaje de comisión (por defecto 10%)
+  
+  // URL del servidor (para back_urls y webhooks)
+  API_URL: z.string().url("API_URL debe ser una URL válida").optional(),
+  
   // Opcionales
   EXPO_ACCESS_TOKEN: z.string().optional(),
   FCM_SERVER_KEY: z.string().optional(), // Server Key de Firebase Cloud Messaging (Legacy - deprecated)

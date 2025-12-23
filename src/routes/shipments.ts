@@ -354,7 +354,7 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
 
   const { data: shipment } = await admin
     .from('shipments')
-    .select('id, current_status, created_by')
+    .select('id, current_status, created_by, price')
     .eq('id', shipmentId)
     .maybeSingle();
 
@@ -368,6 +368,23 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
       error: 'Shipment not available' 
     });
     return;
+  }
+
+  // Verificar que el pago esté aprobado si el envío tiene precio
+  if (shipment.price && shipment.price > 0) {
+    const { data: payment } = await admin
+      .from('payments')
+      .select('id, status')
+      .eq('shipment_id', shipmentId)
+      .eq('status', 'approved')
+      .maybeSingle();
+
+    if (!payment) {
+      res.status(StatusCodes.BAD_REQUEST).json({ 
+        error: 'El pago debe estar aprobado antes de aceptar el envío' 
+      });
+      return;
+    }
   }
 
   const { data: exists } = await admin
@@ -559,6 +576,47 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
       error: 'Not allowed to update status' 
     });
     return;
+  }
+
+  // Si el estado es 'delivered', procesar el split de pagos
+  if (status === 'delivered' && assign?.driver_id) {
+    try {
+      const { data: payment } = await admin
+        .from('payments')
+        .select('id, status, driver_amount, driver_id')
+        .eq('shipment_id', shipmentId)
+        .eq('status', 'approved')
+        .maybeSingle();
+
+      // Si hay un pago aprobado y aún no se ha asignado el driver al pago
+      if (payment && !payment.driver_id) {
+        // Actualizar el pago con el driver_id para registrar quién recibirá el pago
+        await admin
+          .from('payments')
+          .update({ 
+            driver_id: assign.driver_id,
+            paid_at: new Date().toISOString(),
+          })
+          .eq('id', payment.id);
+
+        logger.info('Split de pagos procesado', {
+          paymentId: payment.id,
+          shipmentId,
+          driverId: assign.driver_id,
+          driverAmount: payment.driver_amount,
+        });
+
+        // Nota: En un escenario real, aquí harías la transferencia real del dinero al driver
+        // usando la API de Mercado Pago para hacer el split. Por ahora solo lo registramos.
+        // Para hacer el split real, necesitarías:
+        // 1. El access_token del driver en Mercado Pago Connect
+        // 2. Usar la API de Advanced Payments o Marketplace para transferir el dinero
+      }
+    } catch (paymentError) {
+      logger.error('Error procesando split de pagos', paymentError as Error, { shipmentId });
+      // No fallamos la entrega si hay error en el procesamiento de pagos
+      // pero lo registramos para revisión manual
+    }
   }
 
   // Actualizar estado del envío

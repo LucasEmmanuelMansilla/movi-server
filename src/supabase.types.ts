@@ -47,7 +47,80 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
-      }
+      },
+      payments: {
+        Row: {
+          id: string
+          shipment_id: string
+          payer_id: string
+          driver_id: string | null
+          status: string
+          amount: number
+          commission_amount: number
+          driver_amount: number
+          preference_id: string | null
+          payment_id: string | null
+          payment_data: Json | null
+          paid_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          shipment_id: string
+          payer_id: string
+          driver_id?: string | null
+          status?: string
+          amount: number
+          commission_amount?: number
+          driver_amount?: number
+          preference_id?: string | null
+          payment_id?: string | null
+          payment_data?: Json | null
+          paid_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          shipment_id?: string
+          payer_id?: string
+          driver_id?: string | null
+          status?: string
+          amount?: number
+          commission_amount?: number
+          driver_amount?: number
+          preference_id?: string | null
+          payment_id?: string | null
+          payment_data?: Json | null
+          paid_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "payments_shipment_id_fkey"
+            columns: ["shipment_id"]
+            isOneToOne: false
+            referencedRelation: "shipments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "payments_payer_id_fkey"
+            columns: ["payer_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "payments_driver_id_fkey"
+            columns: ["driver_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      },
       profiles: {
         Row: {
           created_at: string
@@ -80,7 +153,7 @@ export type Database = {
           last_location_updated?: string | null
         }
         Relationships: []
-      }
+      },
       push_tokens: {
         Row: {
           created_at: string
@@ -112,7 +185,7 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
-      }
+      },
       shipment_statuses: {
         Row: {
           created_at: string
@@ -154,7 +227,7 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
-      }
+      },
       shipments: {
         Row: {
           created_at: string
