@@ -34,6 +34,11 @@ export const priceSchema = z.number()
   .nonnegative('El precio debe ser positivo')
   .max(1000000, 'El precio no puede exceder 1,000,000');
 
+// Validar peso
+export const weightSchema = z.number()
+  .positive('El peso debe ser mayor a 0')
+  .max(1000, 'El peso no puede exceder 1000 kg');
+
 // Validar título
 export const titleSchema = z.string()
   .min(3, 'El título debe tener al menos 3 caracteres')

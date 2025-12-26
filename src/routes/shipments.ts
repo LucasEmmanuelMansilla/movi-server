@@ -7,8 +7,8 @@ import { sendPush } from './push';
 import { StatusCodes } from 'http-status-codes';
 import asyncHandler from 'express-async-handler';
 import { logger } from '../utils/logger';
-import { titleSchema, descriptionSchema, addressSchema, priceSchema, validateBody, validateQuery, validateParams } from '../utils/validation';
-import { parseAddressWithCoordinates, geocodeAddress, filterNearbyUsers } from '../utils/geolocation';
+import { titleSchema, descriptionSchema, addressSchema, priceSchema, weightSchema, validateBody, validateQuery, validateParams } from '../utils/validation';
+import { parseAddressWithCoordinates, geocodeAddress, filterNearbyUsers, calculateDistance } from '../utils/geolocation';
 
 const router = Router();
 
@@ -17,8 +17,21 @@ const CreateShipmentBody = z.object({
   description: descriptionSchema,
   pickup_address: addressSchema,
   dropoff_address: addressSchema,
-  price: priceSchema.optional(),
+  weight: weightSchema,
   location: z.object({
+    coords: z.object({
+      accuracy: z.number(),
+      altitude: z.number(),
+      altitudeAccuracy: z.number(),
+      heading: z.number(),
+      latitude: z.number(),
+      longitude: z.number(),
+      speed: z.number(),
+    }),
+    mocked: z.boolean(),
+    timestamp: z.number(),
+  }).optional(),
+  dropoffLocation: z.object({
     coords: z.object({
       accuracy: z.number(),
       altitude: z.number(),
@@ -59,7 +72,7 @@ router.post('/', validateBody(CreateShipmentBody), asyncHandler(async (req, res)
     return;
   }
 
-  // Obtener coordenadas: prioridad 1 = location.coords, 2 = pickup_address parseado, 3 = geocodificar
+  // Obtener coordenadas de retiro: prioridad 1 = location.coords, 2 = pickup_address parseado, 3 = geocodificar
   let pickupLat: number | undefined;
   let pickupLng: number | undefined;
   let pickupAddress: string = body.pickup_address; // Dirección formateada para notificaciones
@@ -89,6 +102,46 @@ router.post('/', validateBody(CreateShipmentBody), asyncHandler(async (req, res)
     }
   }
 
+  // Obtener coordenadas de entrega
+  let dropoffLat: number | undefined;
+  let dropoffLng: number | undefined;
+
+  if (body.dropoffLocation?.coords) {
+    dropoffLat = body.dropoffLocation.coords.latitude;
+    dropoffLng = body.dropoffLocation.coords.longitude;
+  } else {
+    // Intentar geocodificar la dirección de entrega
+    try {
+      const coords = await geocodeAddress(body.dropoff_address);
+      if (coords) {
+        dropoffLat = coords.lat;
+        dropoffLng = coords.lng;
+      }
+    } catch (geocodeError) {
+      logger.warn('Error geocodificando dirección de dropoff', { error: geocodeError });
+    }
+  }
+
+  // Calcular precio automáticamente basado en distancia y peso
+  let calculatedPrice: number | null = null;
+  if (pickupLat && pickupLng && dropoffLat && dropoffLng) {
+    const distance = calculateDistance(pickupLat, pickupLng, dropoffLat, dropoffLng);
+    
+    // Fórmula de cálculo: precio base + (distancia_km * precio_por_km) + (peso_kg * factor_peso)
+    const PRICE_PER_KM = 500; // $500 por kilómetro
+    const PRICE_PER_KG = 200; // $200 por kilogramo
+    const BASE_PRICE = 1000; // Precio base
+
+    calculatedPrice = BASE_PRICE + (distance * PRICE_PER_KM) + (body.weight * PRICE_PER_KG);
+    calculatedPrice = Math.round(calculatedPrice);
+  } else {
+    // Si no se pueden obtener coordenadas, usar un precio estimado basado solo en peso
+    const PRICE_PER_KG = 200;
+    const BASE_PRICE = 1000;
+    calculatedPrice = BASE_PRICE + (body.weight * PRICE_PER_KG);
+  }
+
+  // Crear envío en estado "draft" (borrador) - no se publica hasta que se pague
   const { data, error } = await admin
     .from('shipments')
     .insert({
@@ -96,9 +149,10 @@ router.post('/', validateBody(CreateShipmentBody), asyncHandler(async (req, res)
       description: body.description ?? null,
       pickup_address: body.pickup_address,
       dropoff_address: body.dropoff_address,
-      price: body.price ?? null,
+      price: calculatedPrice,
+      weight: body.weight,
       created_by: user.sub,
-      current_status: 'created',
+      current_status: 'draft', // Estado borrador, se publicará después del pago
     })
     .select('*')
     .single();
@@ -111,66 +165,12 @@ router.post('/', validateBody(CreateShipmentBody), asyncHandler(async (req, res)
     return;
   }
 
-  // Notificar a drivers cercanos al lugar de retiro
-  try {
-    if (pickupLat && pickupLng) {
-      // Obtener todos los drivers disponibles
-      const { data: drivers } = await admin
-        .from('profiles')
-        .select('id, latitude, longitude, role')
-        .eq('role', 'driver')
-        .not('latitude', 'is', null)
-        .not('longitude', 'is', null);
-
-      if (drivers && drivers.length > 0) {
-        // Filtrar drivers cercanos (dentro de 10km por defecto)
-        const nearbyDrivers = filterNearbyUsers(
-          drivers as any[],
-          pickupLat,
-          pickupLng,
-          10 // radio en km
-        );
-
-        if (nearbyDrivers.length > 0) {
-          // Obtener tokens de push de los drivers cercanos
-          const driverIds = nearbyDrivers.map(d => d.id);
-          const { data: tokens } = await admin
-            .from('push_tokens')
-            .select('token')
-            .in('user_id', driverIds);
-
-          const pushTokens = (tokens ?? []).map((t) => t.token);
-          
-          if (pushTokens.length > 0) {
-            await sendPush(
-              pushTokens,
-              'Nuevo envío disponible',
-              `${body.title} - Recoger en: ${pickupAddress}`
-            );
-            logger.info('Notificaciones enviadas a drivers cercanos', { 
-              shipmentId: data.id, 
-              driversCount: nearbyDrivers.length 
-            });
-          }
-        } else {
-          // Si no hay drivers cercanos, notificar a todos los drivers disponibles
-          logger.info('No hay drivers cercanos, notificando a todos los drivers', { shipmentId: data.id });
-          await notifyAllAvailableDrivers(admin, body.title, pickupAddress, data.id);
-        }
-      } else {
-        // Si no hay ubicaciones de drivers, notificar a todos
-        await notifyAllAvailableDrivers(admin, body.title, pickupAddress, data.id);
-      }
-    } else {
-      // Si no hay coordenadas, notificar a todos los drivers disponibles
-      await notifyAllAvailableDrivers(admin, body.title, pickupAddress, data.id);
-    }
-  } catch (notifyError) {
-    logger.error('Error enviando notificaciones a drivers', notifyError as Error, { shipmentId: data.id });
-    // No fallamos si hay error en las notificaciones
-  }
-
-  logger.info('Envío creado exitosamente', { shipmentId: data.id, userId: user.sub });
+  // NO notificar a drivers todavía - el envío está en draft y requiere pago primero
+  logger.info('Envío creado en estado draft (requiere pago)', { 
+    shipmentId: data.id, 
+    userId: user.sub,
+    calculatedPrice 
+  });
   res.status(StatusCodes.CREATED).json(data);
 }));
 
@@ -243,6 +243,7 @@ router.get('/', validateQuery(ListShipmentsQuery), asyncHandler(async (req, res)
 
   try {
     if (scope === 'available') {
+      // Solo mostrar envíos publicados (created), no los borradores (draft)
       const { data, error } = await admin
         .from('shipments')
         .select('*')
@@ -363,6 +364,7 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
     return;
   }
   
+  // Solo se pueden aceptar envíos en estado "created" (publicados)
   if (shipment.current_status !== 'created') {
     res.status(StatusCodes.BAD_REQUEST).json({ 
       error: 'Shipment not available' 

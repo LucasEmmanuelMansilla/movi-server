@@ -11,6 +11,7 @@ import { sendPush } from './push';
 import type { Payment } from '../types/payments';
 import type { Json } from '../supabase.types';
 import { env } from '../env';
+import { parseAddressWithCoordinates, geocodeAddress, filterNearbyUsers } from '../utils/geolocation';
 
 const router = Router();
 
@@ -329,15 +330,108 @@ router.post('/webhook', asyncHandler(async (req, res) => {
       status: dbStatus,
     });
 
-    // Si el pago fue aprobado, notificar al usuario y crear transferencia pendiente
+    // Si el pago fue aprobado, publicar el envío (cambiar de draft a created) y notificar
     if (dbStatus === 'approved' && paymentRecord.status !== 'approved') {
       try {
+        // Obtener información del envío
         const { data: shipment } = await admin
           .from('shipments')
-          .select('title')
+          .select('id, title, current_status, pickup_address')
           .eq('id', externalReference)
           .single();
 
+        if (shipment) {
+          // Si el envío está en estado "draft", publicarlo (cambiar a "created")
+          if (shipment.current_status === 'draft') {
+            await admin
+              .from('shipments')
+              .update({ current_status: 'created' })
+              .eq('id', shipment.id);
+
+            logger.info('Envío publicado después de pago aprobado', {
+              shipmentId: shipment.id,
+              paymentId: paymentRecord.id,
+            });
+
+            // Notificar a drivers cercanos sobre el nuevo envío disponible
+            try {
+              // Obtener coordenadas de retiro del envío
+              const parsedPickup = parseAddressWithCoordinates(shipment.pickup_address);
+              let pickupLat: number | undefined = parsedPickup.lat;
+              let pickupLng: number | undefined = parsedPickup.lng;
+
+              if (!pickupLat || !pickupLng) {
+                const coords = await geocodeAddress(parsedPickup.address);
+                if (coords) {
+                  pickupLat = coords.lat;
+                  pickupLng = coords.lng;
+                }
+              }
+
+              if (pickupLat && pickupLng) {
+                // Obtener todos los drivers disponibles
+                const { data: drivers } = await admin
+                  .from('profiles')
+                  .select('id, latitude, longitude, role')
+                  .eq('role', 'driver')
+                  .not('latitude', 'is', null)
+                  .not('longitude', 'is', null);
+
+                if (drivers && drivers.length > 0) {
+                  // Filtrar drivers cercanos (dentro de 10km)
+                  const nearbyDrivers = filterNearbyUsers(
+                    drivers as any[],
+                    pickupLat,
+                    pickupLng,
+                    10
+                  );
+
+                  if (nearbyDrivers.length > 0) {
+                    const driverIds = nearbyDrivers.map(d => d.id);
+                    const { data: tokens } = await admin
+                      .from('push_tokens')
+                      .select('token')
+                      .in('user_id', driverIds);
+
+                    const pushTokens = (tokens ?? []).map((t) => t.token);
+                    
+                    if (pushTokens.length > 0) {
+                      await sendPush(
+                        pushTokens,
+                        'Nuevo envío disponible',
+                        `${shipment.title} - Recoger en: ${parsedPickup.address}`
+                      );
+                      logger.info('Notificaciones enviadas a drivers cercanos', { 
+                        shipmentId: shipment.id, 
+                        driversCount: nearbyDrivers.length 
+                      });
+                    }
+                  } else {
+                    // Si no hay drivers cercanos, notificar a todos
+                    const driverIds = drivers.map(d => d.id);
+                    const { data: tokens } = await admin
+                      .from('push_tokens')
+                      .select('token')
+                      .in('user_id', driverIds);
+
+                    const pushTokens = (tokens ?? []).map((t) => t.token);
+                    if (pushTokens.length > 0) {
+                      await sendPush(
+                        pushTokens,
+                        'Nuevo envío disponible',
+                        `${shipment.title} - Recoger en: ${parsedPickup.address}`
+                      );
+                    }
+                  }
+                }
+              }
+            } catch (notifyError) {
+              logger.error('Error notificando a drivers después de publicar envío', notifyError as Error, { shipmentId: shipment.id });
+            }
+          }
+        }
+
+        // Notificar al usuario que pagó
         const { data: tokens } = await admin
           .from('push_tokens')
           .select('token')
