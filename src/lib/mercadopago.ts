@@ -64,6 +64,7 @@ export async function createPaymentPreference(params: CreatePreferenceParams) {
           title: params.title,
           quantity: 1,
           unit_price: params.amount,
+          market_place_fee: params.amount * COMMISSION_PERCENTAGE / 100,
         },
       ],
       payer: {

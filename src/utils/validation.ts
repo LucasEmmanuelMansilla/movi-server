@@ -89,6 +89,43 @@ export const businessNameSchema = z.string()
   .transform(sanitizeString)
   .optional();
 
+// Validar CBU (Clave Bancaria Uniforme - Argentina)
+export const cbuSchema = z.string()
+  .regex(/^[0-9]{22}$/, 'El CBU debe tener exactamente 22 dígitos numéricos')
+  .optional();
+
+// Validar CVU (Clave Virtual Uniforme - Argentina, para Mercado Pago)
+export const cvuSchema = z.string()
+  .regex(/^[0-9]{22}$/, 'El CVU debe tener exactamente 22 dígitos numéricos')
+  .optional();
+
+// Validar ALIAS bancario (Argentina)
+export const aliasSchema = z.string()
+  .min(6, 'El ALIAS debe tener al menos 6 caracteres')
+  .max(20, 'El ALIAS no puede exceder 20 caracteres')
+  .regex(/^[a-zA-Z0-9.]+$/, 'El ALIAS solo puede contener letras, números y puntos')
+  .transform(sanitizeString)
+  .optional();
+
+// Validar nombre del banco
+export const bankNameSchema = z.string()
+  .min(2, 'El nombre del banco debe tener al menos 2 caracteres')
+  .max(100, 'El nombre del banco no puede exceder 100 caracteres')
+  .transform(sanitizeString)
+  .optional();
+
+// Validar número de cuenta bancaria
+export const accountNumberSchema = z.string()
+  .min(4, 'El número de cuenta debe tener al menos 4 caracteres')
+  .max(50, 'El número de cuenta no puede exceder 50 caracteres')
+  .transform(sanitizeString)
+  .optional();
+
+// Validar tipo de cuenta bancaria
+export const accountTypeSchema = z.enum(['checking', 'savings', 'cbu', 'cvu', 'alias'], {
+  errorMap: () => ({ message: 'Tipo de cuenta inválido. Debe ser: checking, savings, cbu, cvu o alias' })
+}).optional();
+
 /**
  * Middleware para validar el body de la request con Zod
  */

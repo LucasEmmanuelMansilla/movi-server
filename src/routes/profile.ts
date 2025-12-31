@@ -13,6 +13,12 @@ import {
   vehicleTypeSchema,
   vehiclePlateSchema,
   businessNameSchema,
+  cbuSchema,
+  cvuSchema,
+  aliasSchema,
+  bankNameSchema,
+  accountNumberSchema,
+  accountTypeSchema,
 } from '../utils/validation';
 
 const router = Router();
@@ -28,6 +34,14 @@ const UpdateProfileBody = z.object({
   vehicle_type: vehicleTypeSchema,
   vehicle_plate: vehiclePlateSchema,
   is_available: z.boolean().optional(),
+  // Campos bancarios (para drivers)
+  bank_account_type: accountTypeSchema,
+  bank_cbu: cbuSchema,
+  bank_cvu: cvuSchema,
+  bank_alias: aliasSchema,
+  bank_name: bankNameSchema,
+  bank_account_number: accountNumberSchema,
+  bank_account_holder_name: fullNameSchema.optional(), // Nombre del titular de la cuenta
   // Campos específicos para business
   business_name: businessNameSchema,
   business_address: addressSchema.optional(),
@@ -48,7 +62,7 @@ router.get('/me', asyncHandler(async (req, res) => {
     // Si algunos campos no existen, Supabase los omitirá automáticamente
     const { data, error } = await admin
       .from('profiles')
-      .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, created_at, updated_at')
+      .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, created_at, updated_at')
       .eq('id', user.sub)
       .maybeSingle();
 
@@ -81,6 +95,13 @@ router.get('/me', asyncHandler(async (req, res) => {
           is_available: null,
           business_name: null,
           business_address: null,
+          bank_account_type: null,
+          bank_cbu: null,
+          bank_cvu: null,
+          bank_alias: null,
+          bank_name: null,
+          bank_account_number: null,
+          bank_account_holder_name: null,
           updated_at: null,
         };
         res.json(response);
@@ -149,6 +170,15 @@ router.put('/me', asyncHandler(async (req, res) => {
   if (updateData.vehicle_plate !== undefined) updateFields.vehicle_plate = updateData.vehicle_plate || null;
   if (updateData.is_available !== undefined) updateFields.is_available = updateData.is_available;
   
+  // Campos bancarios (para drivers)
+  if (updateData.bank_account_type !== undefined) updateFields.bank_account_type = updateData.bank_account_type || null;
+  if (updateData.bank_cbu !== undefined) updateFields.bank_cbu = updateData.bank_cbu || null;
+  if (updateData.bank_cvu !== undefined) updateFields.bank_cvu = updateData.bank_cvu || null;
+  if (updateData.bank_alias !== undefined) updateFields.bank_alias = updateData.bank_alias || null;
+  if (updateData.bank_name !== undefined) updateFields.bank_name = updateData.bank_name || null;
+  if (updateData.bank_account_number !== undefined) updateFields.bank_account_number = updateData.bank_account_number || null;
+  if (updateData.bank_account_holder_name !== undefined) updateFields.bank_account_holder_name = updateData.bank_account_holder_name || null;
+  
   // Campos específicos para business
   if (updateData.business_name !== undefined) updateFields.business_name = updateData.business_name || null;
   if (updateData.business_address !== undefined) updateFields.business_address = updateData.business_address || null;
@@ -161,7 +191,7 @@ router.put('/me', asyncHandler(async (req, res) => {
     if (Object.keys(updateFields).length === 0) {
       const { data: currentData } = await admin
         .from('profiles')
-        .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, created_at, updated_at')
+        .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, created_at, updated_at')
         .eq('id', user.sub)
         .maybeSingle();
       
@@ -190,7 +220,7 @@ router.put('/me', asyncHandler(async (req, res) => {
         .from('profiles')
         .update(updateFields)
         .eq('id', user.sub)
-        .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, created_at, updated_at')
+        .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, created_at, updated_at')
         .maybeSingle();
       
       data = result.data;
@@ -229,6 +259,13 @@ router.put('/me', asyncHandler(async (req, res) => {
             is_available: null,
             business_name: null,
             business_address: null,
+            bank_account_type: null,
+            bank_cbu: null,
+            bank_cvu: null,
+            bank_alias: null,
+            bank_name: null,
+            bank_account_number: null,
+            bank_account_holder_name: null,
             updated_at: null,
           };
           
@@ -298,6 +335,13 @@ router.put('/me', asyncHandler(async (req, res) => {
       is_available: (data as any).is_available ?? null,
       business_name: (data as any).business_name ?? null,
       business_address: (data as any).business_address ?? null,
+      bank_account_type: (data as any).bank_account_type ?? null,
+      bank_cbu: (data as any).bank_cbu ?? null,
+      bank_cvu: (data as any).bank_cvu ?? null,
+      bank_alias: (data as any).bank_alias ?? null,
+      bank_name: (data as any).bank_name ?? null,
+      bank_account_number: (data as any).bank_account_number ?? null,
+      bank_account_holder_name: (data as any).bank_account_holder_name ?? null,
       updated_at: (data as any).updated_at ?? null,
     };
 

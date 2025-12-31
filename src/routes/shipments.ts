@@ -518,7 +518,20 @@ const UpdateStatusParams = z.object({
 
 const UpdateStatusBody = z.object({ 
   status: z.enum(['picked_up', 'in_transit', 'delivered', 'cancelled']), 
-  note: z.string().max(500).optional() 
+  note: z.string().max(500).optional(),
+  location: z.object({
+    coords: z.object({
+      accuracy: z.number(),
+      altitude: z.number(),
+      altitudeAccuracy: z.number(),
+      heading: z.number(),
+      latitude: z.number(),
+      longitude: z.number(),
+      speed: z.number(),
+    }),
+    mocked: z.boolean(),
+    timestamp: z.number(),
+  }).optional(),
 });
 
 router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(UpdateStatusBody), asyncHandler(async (req, res) => {
@@ -530,13 +543,13 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
   }
 
   const shipmentId = req.params.id;
-  const { status, note } = req.body;
+  const { status, note, location } = req.body;
   const admin = createAdminClient();
 
-  // Obtener información del envío
+  // Obtener información del envío con direcciones
   const { data: shipment, error: shipError } = await admin
     .from('shipments')
-    .select('id, created_by, current_status')
+    .select('id, created_by, current_status, pickup_address, dropoff_address')
     .eq('id', shipmentId)
     .maybeSingle();
   
@@ -578,6 +591,52 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
       error: 'Not allowed to update status' 
     });
     return;
+  }
+
+  // Validar ubicación para drivers cuando cambian estados específicos
+  if (isDriver && (status === 'picked_up' || status === 'delivered')) {
+    if (!location?.coords) {
+      res.status(StatusCodes.BAD_REQUEST).json({ 
+        error: 'Se requiere la ubicación actual para cambiar este estado' 
+      });
+      return;
+    }
+
+    const driverLat = location.coords.latitude;
+    const driverLng = location.coords.longitude;
+    const MAX_DISTANCE_KM = 0.1; // 100 metros
+
+    if (status === 'picked_up') {
+      // Validar que el driver esté cerca de la dirección de retiro
+      const pickupCoords = await geocodeAddress(shipment.pickup_address);
+      if (!pickupCoords) {
+        logger.warn('No se pudo geocodificar dirección de retiro para validación', { shipmentId });
+        // Continuar sin validación si no se puede geocodificar
+      } else {
+        const distance = calculateDistance(driverLat, driverLng, pickupCoords.lat, pickupCoords.lng);
+        if (distance > MAX_DISTANCE_KM) {
+          res.status(StatusCodes.BAD_REQUEST).json({ 
+            error: `Debes estar cerca del punto de retiro para marcar como recogido. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.` 
+          });
+          return;
+        }
+      }
+    } else if (status === 'delivered') {
+      // Validar que el driver esté cerca de la dirección de entrega
+      const dropoffCoords = await geocodeAddress(shipment.dropoff_address);
+      if (!dropoffCoords) {
+        logger.warn('No se pudo geocodificar dirección de entrega para validación', { shipmentId });
+        // Continuar sin validación si no se puede geocodificar
+      } else {
+        const distance = calculateDistance(driverLat, driverLng, dropoffCoords.lat, dropoffCoords.lng);
+        if (distance > MAX_DISTANCE_KM) {
+          res.status(StatusCodes.BAD_REQUEST).json({ 
+            error: `Debes estar cerca del punto de entrega para marcar como entregado. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.` 
+          });
+          return;
+        }
+      }
+    }
   }
 
   // Si el estado es 'delivered', procesar el split de pagos
