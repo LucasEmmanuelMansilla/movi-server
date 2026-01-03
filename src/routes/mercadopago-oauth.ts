@@ -373,8 +373,8 @@ router.post('/oauth/connect', authMiddleware, asyncHandler(async (req, res) => {
 
     res.status(StatusCodes.OK).json({
       success: true,
-      mp_user_id: updatedProfile?.mp_user_id,
-      mp_status: updatedProfile?.mp_status || 'connected',
+      mp_user_id: (updatedProfile as any)?.mp_user_id || mp_user_id.toString(),
+      mp_status: (updatedProfile as any)?.mp_status || 'connected',
     });
   } catch (error) {
     logger.error('Error conectando Mercado Pago', error as Error);
@@ -399,13 +399,24 @@ router.post('/oauth/refresh', authMiddleware, asyncHandler(async (req, res) => {
     const admin = createAdminClient();
 
     // Obtener perfil con refresh_token
-    const { data: profile } = await admin
-      .from('profiles')
-      .select('mp_refresh_token')
-      .eq('id', user.sub)
-      .maybeSingle();
+    let profile: any = null;
+    try {
+      const result = await admin
+        .from('profiles')
+        .select('mp_refresh_token')
+        .eq('id', user.sub)
+        .maybeSingle();
+      profile = result.data as any;
+    } catch (selectError: any) {
+      // Si hay error por campos que no existen
+      if (selectError.code === '42703' || selectError.message?.includes('does not exist')) {
+        profile = null;
+      } else {
+        throw selectError;
+      }
+    }
 
-    if (!profile || !(profile as any).mp_refresh_token) {
+    if (!profile || !profile.mp_refresh_token) {
       res.status(StatusCodes.NOT_FOUND).json({ 
         error: 'No se encontró refresh_token. Por favor, reconecta tu cuenta de Mercado Pago.' 
       });
@@ -413,7 +424,7 @@ router.post('/oauth/refresh', authMiddleware, asyncHandler(async (req, res) => {
     }
 
     // Desencriptar refresh_token
-    const refreshToken = decryptToken((profile as any).mp_refresh_token);
+    const refreshToken = decryptToken(profile.mp_refresh_token);
 
     // Refrescar token
     const tokenResponse = await refreshOAuthToken(refreshToken);
@@ -497,14 +508,14 @@ router.get('/oauth/status', authMiddleware, asyncHandler(async (req, res) => {
 
     // Intentar obtener los campos de Mercado Pago
     // Si los campos no existen, Supabase los omitirá automáticamente
-    let profile: any;
+    let profile: any = null;
     try {
       const result = await admin
         .from('profiles')
         .select('id, mp_user_id, mp_status, mp_token_expires_at')
         .eq('id', user.sub)
         .maybeSingle();
-      profile = result.data;
+      profile = result.data as any;
     } catch (selectError: any) {
       // Si hay error por campos que no existen, intentar solo con id
       if (selectError.code === '42703' || selectError.message?.includes('does not exist')) {
@@ -513,7 +524,7 @@ router.get('/oauth/status', authMiddleware, asyncHandler(async (req, res) => {
           .select('id')
           .eq('id', user.sub)
           .maybeSingle();
-        profile = result.data;
+        profile = result.data as any;
       } else {
         throw selectError;
       }
@@ -524,9 +535,9 @@ router.get('/oauth/status', authMiddleware, asyncHandler(async (req, res) => {
       return;
     }
 
-    const mpStatus = profile.mp_status || null;
-    const mpUserId = profile.mp_user_id || null;
-    const expiresAt = profile.mp_token_expires_at || null;
+    const mpStatus = profile?.mp_status || null;
+    const mpUserId = profile?.mp_user_id || null;
+    const expiresAt = profile?.mp_token_expires_at || null;
 
     // Verificar si el token está expirado
     let isExpired = false;

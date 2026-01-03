@@ -31,19 +31,30 @@ function decryptToken(encryptedToken: string): string {
 async function getValidAccessToken(userId: string): Promise<string | null> {
   const admin = createAdminClient();
 
-  const { data: profile } = await admin
-    .from('profiles')
-    .select('mp_access_token, mp_refresh_token, mp_token_expires_at, mp_status')
-    .eq('id', userId)
-    .maybeSingle();
+  let profile: any = null;
+  try {
+    const result = await admin
+      .from('profiles')
+      .select('mp_access_token, mp_refresh_token, mp_token_expires_at, mp_status')
+      .eq('id', userId)
+      .maybeSingle();
+    profile = result.data as any;
+  } catch (selectError: any) {
+    // Si hay error por campos que no existen
+    if (selectError.code === '42703' || selectError.message?.includes('does not exist')) {
+      return null;
+    } else {
+      throw selectError;
+    }
+  }
 
-  if (!profile || (profile as any).mp_status !== 'connected') {
+  if (!profile || profile.mp_status !== 'connected') {
     return null;
   }
 
-  const encryptedAccessToken = (profile as any).mp_access_token;
-  const encryptedRefreshToken = (profile as any).mp_refresh_token;
-  const expiresAt = (profile as any).mp_token_expires_at;
+  const encryptedAccessToken = profile.mp_access_token;
+  const encryptedRefreshToken = profile.mp_refresh_token;
+  const expiresAt = profile.mp_token_expires_at;
 
   if (!encryptedAccessToken) {
     return null;
@@ -137,11 +148,27 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
     }
 
     // Obtener información del driver
-    const { data: driverProfile } = await admin
-      .from('profiles')
-      .select('id, mp_user_id, mp_status, role, full_name')
-      .eq('id', driver_id)
-      .maybeSingle();
+    let driverProfile: any = null;
+    try {
+      const result = await admin
+        .from('profiles')
+        .select('id, mp_user_id, mp_status, role, full_name')
+        .eq('id', driver_id)
+        .maybeSingle();
+      driverProfile = result.data as any;
+    } catch (selectError: any) {
+      // Si hay error por campos que no existen, intentar solo con campos básicos
+      if (selectError.code === '42703' || selectError.message?.includes('does not exist')) {
+        const result = await admin
+          .from('profiles')
+          .select('id, role, full_name')
+          .eq('id', driver_id)
+          .maybeSingle();
+        driverProfile = result.data as any;
+      } else {
+        throw selectError;
+      }
+    }
 
     if (!driverProfile) {
       res.status(StatusCodes.NOT_FOUND).json({ error: 'Driver no encontrado' });
@@ -155,8 +182,8 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
       return;
     }
 
-    const mpUserId = (driverProfile as any).mp_user_id;
-    const mpStatus = (driverProfile as any).mp_status;
+    const mpUserId = driverProfile.mp_user_id;
+    const mpStatus = driverProfile.mp_status;
 
     if (!mpUserId || mpStatus !== 'connected') {
       res.status(StatusCodes.BAD_REQUEST).json({ 
