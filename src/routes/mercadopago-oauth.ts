@@ -475,8 +475,16 @@ router.get('/oauth/url', asyncHandler(async (req, res) => {
   const redirectUri = env.MP_REDIRECT_URI;
 
   if (!clientId || !redirectUri) {
+    logger.warn('OAuth de Mercado Pago no configurado', {
+      hasClientId: !!clientId,
+      hasRedirectUri: !!redirectUri,
+    });
     res.status(StatusCodes.SERVICE_UNAVAILABLE).json({ 
-      error: 'OAuth de Mercado Pago no está configurado' 
+      error: 'OAuth de Mercado Pago no está configurado. Verifica las variables de entorno MP_CLIENT_ID y MP_REDIRECT_URI.',
+      details: {
+        hasClientId: !!clientId,
+        hasRedirectUri: !!redirectUri,
+      }
     });
     return;
   }
