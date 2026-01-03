@@ -14,9 +14,13 @@ const envSchema = z.object({
   SUPABASE_JWT_SECRET: z.string().min(1, "Falta SUPABASE_JWT_SECRET").optional(),
 
   // Mercado Pago
-  MERCADOPAGO_ACCESS_TOKEN: z.string().optional(),
+  MERCADOPAGO_ACCESS_TOKEN: z.string().optional(), // Access token del marketplace
   MERCADOPAGO_PUBLIC_KEY: z.string().optional(),
   COMMISSION_PERCENTAGE: z.string().default('10'), // Porcentaje de comisión (por defecto 10%)
+  // OAuth de Mercado Pago
+  MP_CLIENT_ID: z.string().optional(), // Client ID de la aplicación OAuth
+  MP_CLIENT_SECRET: z.string().optional(), // Client Secret de la aplicación OAuth
+  MP_REDIRECT_URI: z.string().url("MP_REDIRECT_URI debe ser una URL válida").optional(), // URI de redirección para OAuth
   
   // URL del servidor (para back_urls y webhooks)
   API_URL: z.string().url("API_URL debe ser una URL válida").optional(),

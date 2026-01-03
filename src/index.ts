@@ -11,6 +11,8 @@ import { pushRouter } from './routes/push';
 import { profileRouter } from './routes/profile';
 import { paymentRouter } from './routes/payments';
 import { driverTransfersRouter } from './routes/driver-transfers';
+import { mercadoPagoOAuthRouter } from './routes/mercadopago-oauth';
+import { mercadoPagoTransfersRouter } from './routes/mercadopago-transfers';
 import { authMiddleware } from './middleware/auth';
 import { apiRateLimiter, authRateLimiter } from './middleware/rateLimiter';
 import { logger } from './utils/logger';
@@ -70,6 +72,9 @@ app.use('/push', apiRateLimiter, authMiddleware, pushRouter);
 app.use('/profile', apiRateLimiter, authMiddleware, profileRouter);
 app.use('/payments', apiRateLimiter, paymentRouter); // Algunos endpoints requieren auth (se aplica dentro)
 app.use('/driver-transfers', apiRateLimiter, authMiddleware, driverTransfersRouter);
+// Rutas de Mercado Pago - registrar las más específicas primero
+app.use('/mp/transfers', apiRateLimiter, authMiddleware, mercadoPagoTransfersRouter); // Transferencias de Mercado Pago
+app.use('/mp', apiRateLimiter, mercadoPagoOAuthRouter); // OAuth de Mercado Pago (algunos endpoints requieren auth)
 
 // Error handling middleware
 app.use((err: any, req: Request, res: Response, _next: NextFunction) => {

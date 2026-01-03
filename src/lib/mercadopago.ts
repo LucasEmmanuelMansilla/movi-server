@@ -269,5 +269,259 @@ export async function transferToDriver(
   };
 }
 
+/**
+ * Intercambia un authorization code por access_token y refresh_token
+ * Usa la API de OAuth de Mercado Pago
+ */
+export interface OAuthTokenResponse {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  scope: string;
+  user_id: number;
+  token_type: string;
+}
+
+export async function exchangeOAuthCode(
+  authorizationCode: string
+): Promise<OAuthTokenResponse> {
+  const clientId = env.MP_CLIENT_ID;
+  const clientSecret = env.MP_CLIENT_SECRET;
+  const redirectUri = env.MP_REDIRECT_URI;
+
+  if (!clientId || !clientSecret || !redirectUri) {
+    throw new Error('Configuración de OAuth incompleta. Verifica MP_CLIENT_ID, MP_CLIENT_SECRET y MP_REDIRECT_URI');
+  }
+
+  try {
+    // URL base según el entorno (sandbox o producción)
+    const baseUrl = isSandbox 
+      ? 'https://api.mercadopago.com' // En sandbox también se usa api.mercadopago.com
+      : 'https://api.mercadopago.com';
+
+    const response = await fetch(`${baseUrl}/oauth/token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json',
+      },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        client_secret: clientSecret,
+        code: authorizationCode,
+        redirect_uri: redirectUri,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      logger.error('Error intercambiando código OAuth', new Error(errorText), {
+        status: response.status,
+        statusText: response.statusText,
+      });
+      throw new Error(`Error en OAuth: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json() as OAuthTokenResponse;
+    
+    logger.info('Código OAuth intercambiado exitosamente', {
+      user_id: data.user_id,
+      expires_in: data.expires_in,
+    });
+
+    return data;
+  } catch (error) {
+    logger.error('Error intercambiando código OAuth', error as Error);
+    throw error;
+  }
+}
+
+/**
+ * Refresca un access_token usando el refresh_token
+ */
+export async function refreshOAuthToken(
+  refreshToken: string
+): Promise<OAuthTokenResponse> {
+  const clientId = env.MP_CLIENT_ID;
+  const clientSecret = env.MP_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    throw new Error('Configuración de OAuth incompleta. Verifica MP_CLIENT_ID y MP_CLIENT_SECRET');
+  }
+
+  try {
+    const baseUrl = isSandbox 
+      ? 'https://api.mercadopago.com'
+      : 'https://api.mercadopago.com';
+
+    const response = await fetch(`${baseUrl}/oauth/token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json',
+      },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      logger.error('Error refrescando token OAuth', new Error(errorText), {
+        status: response.status,
+        statusText: response.statusText,
+      });
+      throw new Error(`Error refrescando token: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json() as OAuthTokenResponse;
+    
+    logger.info('Token OAuth refrescado exitosamente', {
+      user_id: data.user_id,
+      expires_in: data.expires_in,
+    });
+
+    return data;
+  } catch (error) {
+    logger.error('Error refrescando token OAuth', error as Error);
+    throw error;
+  }
+}
+
+/**
+ * Obtiene información del usuario autenticado
+ * Usa el endpoint GET /users/me de Mercado Pago
+ */
+export interface MercadoPagoUser {
+  id: number;
+  nickname: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  site_id: string;
+  country_id: string;
+  permalink: string;
+  registration_date: string;
+  status: {
+    site_status: string;
+  };
+}
+
+export async function getMercadoPagoUser(
+  accessToken: string
+): Promise<MercadoPagoUser> {
+  try {
+    const baseUrl = isSandbox 
+      ? 'https://api.mercadopago.com'
+      : 'https://api.mercadopago.com';
+
+    const response = await fetch(`${baseUrl}/users/me`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      logger.error('Error obteniendo usuario de Mercado Pago', new Error(errorText), {
+        status: response.status,
+        statusText: response.statusText,
+      });
+      throw new Error(`Error obteniendo usuario: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json() as MercadoPagoUser;
+    
+    logger.info('Usuario de Mercado Pago obtenido', {
+      user_id: data.id,
+      email: data.email,
+    });
+
+    return data;
+  } catch (error) {
+    logger.error('Error obteniendo usuario de Mercado Pago', error as Error);
+    throw error;
+  }
+}
+
+/**
+ * Transfiere dinero a un usuario usando la API de transferencias de Mercado Pago
+ * Usa el endpoint POST /v1/transfers con el access_token del marketplace
+ */
+export interface TransferParams {
+  amount: number;
+  destinationUserId: number; // mp_user_id del usuario destino
+  description: string;
+}
+
+export interface TransferResponse {
+  id: number;
+  amount: number;
+  status: string;
+  date_created: string;
+  destination_user_id: number;
+  description: string;
+}
+
+export async function transferToUser(
+  params: TransferParams
+): Promise<TransferResponse> {
+  const marketplaceAccessToken = env.MERCADOPAGO_ACCESS_TOKEN;
+
+  if (!marketplaceAccessToken) {
+    throw new Error('MERCADOPAGO_ACCESS_TOKEN no configurado');
+  }
+
+  try {
+    const baseUrl = isSandbox 
+      ? 'https://api.mercadopago.com'
+      : 'https://api.mercadopago.com';
+
+    const response = await fetch(`${baseUrl}/v1/transfers`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${marketplaceAccessToken}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({
+        amount: params.amount,
+        user_id: params.destinationUserId,
+        description: params.description,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      logger.error('Error realizando transferencia', new Error(errorText), {
+        status: response.status,
+        statusText: response.statusText,
+        params,
+      });
+      throw new Error(`Error en transferencia: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json() as TransferResponse;
+    
+    logger.info('Transferencia realizada exitosamente', {
+      transferId: data.id,
+      amount: data.amount,
+      destinationUserId: data.destination_user_id,
+      status: data.status,
+    });
+
+    return data;
+  } catch (error) {
+    logger.error('Error realizando transferencia', error as Error, { params });
+    throw error;
+  }
+}
+
 export { COMMISSION_PERCENTAGE };
 

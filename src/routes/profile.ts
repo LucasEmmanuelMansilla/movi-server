@@ -62,7 +62,7 @@ router.get('/me', asyncHandler(async (req, res) => {
     // Si algunos campos no existen, Supabase los omitirá automáticamente
     const { data, error } = await admin
       .from('profiles')
-      .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, created_at, updated_at')
+      .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, mp_user_id, mp_status, mp_token_expires_at, created_at, updated_at')
       .eq('id', user.sub)
       .maybeSingle();
 
@@ -102,6 +102,9 @@ router.get('/me', asyncHandler(async (req, res) => {
           bank_name: null,
           bank_account_number: null,
           bank_account_holder_name: null,
+          mp_user_id: null,
+          mp_status: null,
+          mp_token_expires_at: null,
           updated_at: null,
         };
         res.json(response);
@@ -118,9 +121,14 @@ router.get('/me', asyncHandler(async (req, res) => {
     }
 
     // Si el email no viene de la BD, obtenerlo del JWT
+    // No incluir tokens encriptados por seguridad
     const response = {
       ...(data as Record<string, any>),
       email: (data as Record<string, any>).email || user.email || null,
+      // Incluir campos de Mercado Pago (sin tokens)
+      mp_user_id: (data as Record<string, any>).mp_user_id || null,
+      mp_status: (data as Record<string, any>).mp_status || null,
+      mp_token_expires_at: (data as Record<string, any>).mp_token_expires_at || null,
     };
 
     res.json(response);
