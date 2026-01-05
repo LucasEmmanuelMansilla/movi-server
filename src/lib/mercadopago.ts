@@ -285,12 +285,17 @@ export interface OAuthTokenResponse {
 export async function exchangeOAuthCode(
   authorizationCode: string
 ): Promise<OAuthTokenResponse> {
-  const clientId = env.MP_CLIENT_ID;
+  // Usar MP_APPLICATION_ID si está disponible, sino MP_CLIENT_ID
+  const clientId = env.MP_APPLICATION_ID || env.MP_CLIENT_ID;
   const clientSecret = env.MP_CLIENT_SECRET;
   const redirectUri = env.MP_REDIRECT_URI;
 
-  if (!clientId || !clientSecret || !redirectUri) {
-    throw new Error('Configuración de OAuth incompleta. Verifica MP_CLIENT_ID, MP_CLIENT_SECRET y MP_REDIRECT_URI');
+  if (!clientId || !redirectUri) {
+    throw new Error('Configuración de OAuth incompleta. Verifica MP_APPLICATION_ID (o MP_CLIENT_ID) y MP_REDIRECT_URI');
+  }
+
+  if (!clientSecret) {
+    throw new Error('MP_CLIENT_SECRET es requerido para el intercambio de tokens OAuth. Este valor corresponde a la SECRET_KEY de tu aplicación de Mercado Pago, disponible en "Detalles de la aplicación > Credenciales". Si no la ves, verifica que tu aplicación esté configurada con el modelo de integración "Marketplace" (debe aparecer después de seleccionar el producto Checkout Pro o Checkout API).');
   }
 
   try {
@@ -343,11 +348,16 @@ export async function exchangeOAuthCode(
 export async function refreshOAuthToken(
   refreshToken: string
 ): Promise<OAuthTokenResponse> {
-  const clientId = env.MP_CLIENT_ID;
+  // Usar MP_APPLICATION_ID si está disponible, sino MP_CLIENT_ID
+  const clientId = env.MP_APPLICATION_ID || env.MP_CLIENT_ID;
   const clientSecret = env.MP_CLIENT_SECRET;
 
-  if (!clientId || !clientSecret) {
-    throw new Error('Configuración de OAuth incompleta. Verifica MP_CLIENT_ID y MP_CLIENT_SECRET');
+  if (!clientId) {
+    throw new Error('Configuración de OAuth incompleta. Verifica MP_APPLICATION_ID (o MP_CLIENT_ID)');
+  }
+
+  if (!clientSecret) {
+    throw new Error('MP_CLIENT_SECRET es requerido para refrescar tokens OAuth. Este valor corresponde a la SECRET_KEY de tu aplicación de Mercado Pago, disponible en "Detalles de la aplicación > Credenciales". Si no la ves, verifica que tu aplicación esté configurada con el modelo de integración "Marketplace".');
   }
 
   try {

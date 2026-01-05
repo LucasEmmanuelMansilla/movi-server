@@ -18,7 +18,8 @@ const envSchema = z.object({
   MERCADOPAGO_PUBLIC_KEY: z.string().optional(),
   COMMISSION_PERCENTAGE: z.string().default('10'), // Porcentaje de comisión (por defecto 10%)
   // OAuth de Mercado Pago
-  MP_CLIENT_ID: z.string().optional(), // Client ID de la aplicación OAuth
+  MP_APPLICATION_ID: z.string().optional(), // Application ID de la aplicación OAuth (reemplaza a client_id)
+  MP_CLIENT_ID: z.string().optional(), // Client ID (deprecated, usar MP_APPLICATION_ID)
   MP_CLIENT_SECRET: z.string().optional(), // Client Secret de la aplicación OAuth
   MP_REDIRECT_URI: z.string().url("MP_REDIRECT_URI debe ser una URL válida").optional(), // URI de redirección para OAuth
   

@@ -471,18 +471,21 @@ router.post('/oauth/refresh', authMiddleware, asyncHandler(async (req, res) => {
  * Obtiene la URL de OAuth de Mercado Pago
  */
 router.get('/oauth/url', asyncHandler(async (req, res) => {
-  const clientId = env.MP_CLIENT_ID;
+  // Usar MP_APPLICATION_ID si está disponible, sino MP_CLIENT_ID (para compatibilidad)
+  const applicationId = env.MP_APPLICATION_ID || env.MP_CLIENT_ID;
   const redirectUri = env.MP_REDIRECT_URI;
 
-  if (!clientId || !redirectUri) {
+  if (!applicationId || !redirectUri) {
     logger.warn('OAuth de Mercado Pago no configurado', {
-      hasClientId: !!clientId,
+      hasApplicationId: !!env.MP_APPLICATION_ID,
+      hasClientId: !!env.MP_CLIENT_ID,
       hasRedirectUri: !!redirectUri,
     });
     res.status(StatusCodes.SERVICE_UNAVAILABLE).json({ 
-      error: 'OAuth de Mercado Pago no está configurado. Verifica las variables de entorno MP_CLIENT_ID y MP_REDIRECT_URI.',
+      error: 'OAuth de Mercado Pago no está configurado. Verifica las variables de entorno MP_APPLICATION_ID (o MP_CLIENT_ID) y MP_REDIRECT_URI.',
       details: {
-        hasClientId: !!clientId,
+        hasApplicationId: !!env.MP_APPLICATION_ID,
+        hasClientId: !!env.MP_CLIENT_ID,
         hasRedirectUri: !!redirectUri,
       }
     });
@@ -490,10 +493,10 @@ router.get('/oauth/url', asyncHandler(async (req, res) => {
   }
 
   const encodedRedirectUri = encodeURIComponent(redirectUri);
-  const scope = encodeURIComponent('offline_access read write');
   
-  // URL de OAuth de Mercado Pago para Argentina
-  const oauthUrl = `https://auth.mercadopago.com.ar/authorization?client_id=${clientId}&response_type=code&platform_id=mp&redirect_uri=${encodedRedirectUri}&scope=${scope}`;
+  // URL de OAuth de Mercado Pago para Argentina (Split de Pagos)
+  // Según la documentación de Split de Pagos, se usa client_id (que es el APP_ID)
+  const oauthUrl = `https://auth.mercadopago.com.ar/authorization?client_id=${applicationId}&response_type=code&platform_id=mp&redirect_uri=${encodedRedirectUri}`;
 
   res.status(StatusCodes.OK).json({
     oauth_url: oauthUrl,
