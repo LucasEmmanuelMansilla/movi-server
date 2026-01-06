@@ -685,14 +685,76 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
           });
           // No fallamos la entrega, pero registramos el warning
         } else {
-          // Importar la función de transferencia
+          // Importar las funciones necesarias
           const { transferToUser } = await import('../lib/mercadopago');
+          const { refreshOAuthToken } = await import('../lib/mercadopago');
+          const crypto = await import('crypto');
+          const { env } = await import('../env');
+          
+          // Obtener el access_token del driver (necesario para la transferencia)
+          let driverAccessToken: string | null = null;
+          try {
+            let driverTokenProfile: any = null;
+            try {
+              const result = await admin
+                .from('profiles')
+                .select('mp_access_token, mp_refresh_token, mp_token_expires_at')
+                .eq('id', assign.driver_id)
+                .maybeSingle();
+              driverTokenProfile = result.data as any;
+            } catch (selectError: any) {
+              // Si hay error por campos que no existen
+              if (selectError.code === '42703' || selectError.message?.includes('does not exist')) {
+                driverTokenProfile = null;
+              } else {
+                throw selectError;
+              }
+            }
+
+            if (driverTokenProfile?.mp_access_token) {
+              // Función para desencriptar token (misma lógica que en mercadopago-transfers.ts)
+              const decryptToken = (encryptedToken: string): string => {
+                const algorithm = 'aes-256-cbc';
+                const key = crypto.scryptSync(env.SUPABASE_SERVICE_ROLE_KEY || 'default-key', 'salt', 32);
+                const [ivHex, encrypted] = encryptedToken.split(':');
+                const iv = Buffer.from(ivHex, 'hex');
+                const decipher = crypto.createDecipheriv(algorithm, key, iv);
+                let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+                decrypted += decipher.final('utf8');
+                return decrypted;
+              };
+
+              let accessToken = decryptToken(driverTokenProfile.mp_access_token);
+              const expiresAt = driverTokenProfile.mp_token_expires_at;
+              const isExpired = expiresAt && new Date(expiresAt) < new Date();
+
+              // Si está expirado, refrescar
+              if (isExpired && driverTokenProfile.mp_refresh_token) {
+                try {
+                  const refreshToken = decryptToken(driverTokenProfile.mp_refresh_token);
+                  const tokenResponse = await refreshOAuthToken(refreshToken);
+                  accessToken = tokenResponse.access_token;
+                } catch (refreshError) {
+                  logger.error('Error refrescando token del driver', refreshError as Error, {
+                    driverId: assign.driver_id,
+                  });
+                }
+              }
+
+              driverAccessToken = accessToken;
+            }
+          } catch (tokenError) {
+            logger.error('Error obteniendo access_token del driver', tokenError as Error, {
+              driverId: assign.driver_id,
+            });
+          }
           
           try {
             // Realizar la transferencia al driver
             const transferResult = await transferToUser({
               amount: payment.driver_amount,
               driverUserId: parseInt(driverProfile.mp_user_id),
+              driverAccessToken: driverAccessToken || undefined,
               description: `Pago por envío ${shipmentId}`,
               externalReference: payment.id,
             });

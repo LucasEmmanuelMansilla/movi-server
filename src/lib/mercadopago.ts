@@ -479,6 +479,7 @@ export async function getMercadoPagoUser(
 export interface TransferParams {
   amount: number;
   driverUserId: number; // mp_user_id del driver (destinatario de la transferencia)
+  driverAccessToken?: string; // access_token del driver (opcional, para método alternativo)
   description: string;
   externalReference?: string; // ID del pago o envío relacionado
 }
@@ -516,36 +517,80 @@ export async function transferToUser(
       ? 'https://api.mercadopago.com'
       : 'https://api.mercadopago.com';
 
-    // Usar Advanced Payments API para transferir dinero al driver
-    // Advanced Payments permite transferir dinero entre cuentas de Mercado Pago
-    // NOTA: La estructura puede variar según la versión de la API
-    // Si este endpoint no funciona, considera usar el split de pagos en el momento de crear la preferencia
-    const advancedPaymentData = {
-      application_id: applicationId.toString(),
-      payer: {
-        id: params.driverUserId.toString(), // ID del driver que recibirá el dinero
-      },
-      amount: params.amount,
-      description: params.description,
-      ...(params.externalReference && { external_reference: params.externalReference }),
-    };
+    // Intentar usar el endpoint de pagos con el access_token del driver
+    // Esto crea un pago que se acredita a la cuenta del driver usando el dinero del marketplace
+    // NOTA: Esto requiere que el marketplace tenga fondos disponibles
+    let response: Response;
+    
+    if (params.driverAccessToken) {
+      // Método 1: Usar access_token del driver para crear un pago a su favor
+      // El marketplace debe tener fondos y crear el pago usando el token del driver
+      const paymentData = {
+        transaction_amount: params.amount,
+        description: params.description,
+        payment_method_id: 'account_money',
+        payer: {
+          email: 'marketplace@movi.com', // Email del marketplace
+        },
+        ...(params.externalReference && { external_reference: params.externalReference }),
+      };
 
-    logger.debug('Intentando transferencia con Advanced Payments', {
-      applicationId,
-      driverUserId: params.driverUserId,
-      amount: params.amount,
-    });
+      logger.debug('Intentando transferencia usando access_token del driver', {
+        driverUserId: params.driverUserId,
+        amount: params.amount,
+      });
 
-    const response = await fetch(`${baseUrl}/v1/advanced_payments`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${marketplaceAccessToken}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'X-Idempotency-Key': `${params.externalReference || 'transfer'}-${Date.now()}`, // Evitar duplicados
-      },
-      body: JSON.stringify(advancedPaymentData),
-    });
+      response = await fetch(`${baseUrl}/v1/payments`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${params.driverAccessToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'X-Idempotency-Key': `${params.externalReference || 'transfer'}-${Date.now()}`,
+        },
+        body: JSON.stringify(paymentData),
+      });
+    } else {
+      // Método 2: Intentar Advanced Payments (puede no estar disponible)
+      const advancedPaymentData = {
+        application_id: applicationId.toString(),
+        payer: {
+          id: params.driverUserId.toString(), // Driver que recibirá
+        },
+        payments: [
+          {
+            payment_method_id: 'account_money',
+            payment_type_id: 'account_money',
+            transaction_amount: params.amount,
+            description: params.description,
+          },
+        ],
+        disbursements: [
+          {
+            collector_id: params.driverUserId.toString(),
+            amount: params.amount,
+          },
+        ],
+        ...(params.externalReference && { external_reference: params.externalReference }),
+      };
+
+      logger.debug('Intentando transferencia con Advanced Payments', {
+        applicationId,
+        driverUserId: params.driverUserId,
+        amount: params.amount,
+      });
+
+      response = await fetch(`${baseUrl}/v1/advanced_payments`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${marketplaceAccessToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'X-Idempotency-Key': `${params.externalReference || 'transfer'}-${Date.now()}`,
+        },
+        body: JSON.stringify(advancedPaymentData),
+      });
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
