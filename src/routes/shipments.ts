@@ -616,7 +616,7 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
         const distance = calculateDistance(driverLat, driverLng, pickupCoords.lat, pickupCoords.lng);
         if (distance > MAX_DISTANCE_KM) {
           res.status(StatusCodes.BAD_REQUEST).json({ 
-            error: `Debes estar cerca del punto de retiro para marcar como recogido. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.` 
+            error: `Debes estar en el radio de 100 metros del punto de retiro para marcar como recogido. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.` 
           });
           return;
         }
@@ -631,7 +631,7 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
         const distance = calculateDistance(driverLat, driverLng, dropoffCoords.lat, dropoffCoords.lng);
         if (distance > MAX_DISTANCE_KM) {
           res.status(StatusCodes.BAD_REQUEST).json({ 
-            error: `Debes estar cerca del punto de entrega para marcar como entregado. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.` 
+            error: `Debes estar en el radio de 100 metros del punto de entrega para marcar como entregado. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.` 
           });
           return;
         }
