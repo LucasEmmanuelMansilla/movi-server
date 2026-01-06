@@ -238,14 +238,15 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
       }
     }
 
-    // Realizar transferencia usando el access_token del marketplace
+    // Realizar transferencia usando el access_token del driver
     const transferDescription = description || 
       (payment_id ? `Pago por servicio - Payment ID: ${payment_id}` : `Transferencia a ${(driverProfile as any).full_name || 'driver'}`);
 
     const transferResult = await transferToUser({
       amount,
-      destinationUserId: parseInt(mpUserId),
+      driverUserId: parseInt(mpUserId),
       description: transferDescription,
+      externalReference: payment_id || undefined,
     });
 
     logger.info('Transferencia realizada exitosamente', {

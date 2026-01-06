@@ -726,7 +726,16 @@ router.get('/shipment/:shipmentId', validateParams(GetPaymentParams), authMiddle
   // Obtener el pago
   const { data: payment, error } = await admin
     .from('payments')
-    .select('*')
+    .select(`
+      *,
+      driver_transfers (
+        id,
+        status,
+        transferred_at,
+        transfer_method,
+        amount
+      )
+    `)
     .eq('shipment_id', shipmentId)
     .order('created_at', { ascending: false })
     .limit(1)
