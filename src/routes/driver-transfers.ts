@@ -371,10 +371,21 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
 
   const admin = createAdminClient();
 
-  // Obtener estadísticas
-  const { data: transfers, error } = await (admin
-    .from('driver_transfers' as any)
-    .select('status, amount') as any);
+  // Obtener rol del usuario para filtrar si es driver
+  const { data: profile } = await admin
+    .from('profiles')
+    .select('role')
+    .eq('id', user.sub)
+    .maybeSingle();
+
+  // Obtener estadísticas filtradas por driver_id si el usuario es driver
+  let query = admin.from('driver_transfers' as any).select('status, amount');
+  
+  if (profile?.role === 'driver') {
+    query = query.eq('driver_id', user.sub);
+  }
+
+  const { data: transfers, error } = await (query as any);
 
   if (error) {
     logger.error('Error obteniendo estadísticas', error as Error);
