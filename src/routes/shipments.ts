@@ -639,42 +639,101 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
     }
   }
 
-  // Si el estado es 'delivered', procesar el split de pagos
+  // Si el estado es 'delivered', procesar la transferencia de pago al driver
   if (status === 'delivered' && assign?.driver_id) {
     try {
       const { data: payment } = await admin
         .from('payments')
-        .select('id, status, driver_amount, driver_id')
+        .select('id, status, driver_amount, shipment_id')
         .eq('shipment_id', shipmentId)
         .eq('status', 'approved')
         .maybeSingle();
 
-      // Si hay un pago aprobado y aún no se ha asignado el driver al pago
-      if (payment && !payment.driver_id) {
-        // Actualizar el pago con el driver_id para registrar quién recibirá el pago
-        await admin
-          .from('payments')
-          .update({ 
-            driver_id: assign.driver_id,
-            paid_at: new Date().toISOString(),
-          })
-          .eq('id', payment.id);
+      // Si hay un pago aprobado, transferir el dinero al driver
+      if (payment && payment.driver_amount > 0) {
+        // Obtener información del driver (mp_user_id y estado de conexión)
+        const { data: driverProfile } = await admin
+          .from('profiles')
+          .select('id, mp_user_id, mp_status, full_name')
+          .eq('id', assign.driver_id)
+          .maybeSingle();
 
-        logger.info('Split de pagos procesado', {
-          paymentId: payment.id,
-          shipmentId,
-          driverId: assign.driver_id,
-          driverAmount: payment.driver_amount,
-        });
+        if (!driverProfile || !driverProfile.mp_user_id || driverProfile.mp_status !== 'connected') {
+          logger.warn('Driver no tiene Mercado Pago conectado, no se puede transferir', {
+            driverId: assign.driver_id,
+            shipmentId,
+            paymentId: payment.id,
+          });
+          // No fallamos la entrega, pero registramos el warning
+        } else {
+          // Importar la función de transferencia
+          const { transferToUser } = await import('../lib/mercadopago');
+          
+          try {
+            // Realizar la transferencia al driver
+            const transferResult = await transferToUser({
+              amount: payment.driver_amount,
+              driverUserId: parseInt(driverProfile.mp_user_id),
+              description: `Pago por envío ${shipmentId}`,
+              externalReference: payment.id,
+            });
 
-        // Nota: En un escenario real, aquí harías la transferencia real del dinero al driver
-        // usando la API de Mercado Pago para hacer el split. Por ahora solo lo registramos.
-        // Para hacer el split real, necesitarías:
-        // 1. El access_token del driver en Mercado Pago Connect
-        // 2. Usar la API de Advanced Payments o Marketplace para transferir el dinero
+            logger.info('Transferencia realizada exitosamente al driver', {
+              transferId: transferResult.id,
+              paymentId: payment.id,
+              shipmentId,
+              driverId: assign.driver_id,
+              amount: payment.driver_amount,
+              status: transferResult.status,
+            });
+
+            // Actualizar el registro de transferencia en driver_transfers si existe
+            const { data: existingTransfer } = await (admin
+              .from('driver_transfers' as any)
+              .select('id')
+              .eq('payment_id', payment.id)
+              .maybeSingle() as any);
+
+            if (existingTransfer) {
+              await (admin
+                .from('driver_transfers' as any)
+                .update({
+                  status: 'completed',
+                  transferred_at: new Date().toISOString(),
+                  transfer_method: 'mercadopago',
+                  mp_transfer_id: transferResult.id.toString(),
+                  notes: `Transferencia realizada automáticamente al marcar como entregado. Transfer ID: ${transferResult.id}`,
+                } as any)
+                .eq('id', existingTransfer.id) as any);
+            } else {
+              // Crear nuevo registro de transferencia
+              await (admin
+                .from('driver_transfers' as any)
+                .insert({
+                  driver_id: assign.driver_id,
+                  payment_id: payment.id,
+                  amount: payment.driver_amount,
+                  status: 'completed',
+                  transfer_method: 'mercadopago',
+                  mp_transfer_id: transferResult.id.toString(),
+                  transferred_at: new Date().toISOString(),
+                  notes: `Transferencia realizada automáticamente al marcar como entregado. Transfer ID: ${transferResult.id}`,
+                } as any) as any);
+            }
+          } catch (transferError) {
+            logger.error('Error realizando transferencia al driver', transferError as Error, {
+              paymentId: payment.id,
+              shipmentId,
+              driverId: assign.driver_id,
+              driverUserId: driverProfile.mp_user_id,
+            });
+            // No fallamos la entrega si hay error en la transferencia
+            // pero registramos el error para revisión manual
+          }
+        }
       }
     } catch (paymentError) {
-      logger.error('Error procesando split de pagos', paymentError as Error, { shipmentId });
+      logger.error('Error procesando transferencia de pago', paymentError as Error, { shipmentId });
       // No fallamos la entrega si hay error en el procesamiento de pagos
       // pero lo registramos para revisión manual
     }
