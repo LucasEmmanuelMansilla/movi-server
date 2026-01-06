@@ -12,11 +12,183 @@ import type { Payment } from '../types/payments';
 import type { Json } from '../supabase.types';
 import { env } from '../env';
 import { parseAddressWithCoordinates, geocodeAddress, filterNearbyUsers } from '../utils/geolocation';
+import { env } from '../env';
 
 const router = Router();
 
 // Aplicar middleware de autenticación a todas las rutas excepto webhook y redirects
 import { authMiddleware } from '../middleware/auth';
+
+// Función auxiliar para procesar pago aprobado (reutilizable)
+async function processApprovedPayment(
+  paymentRecord: any,
+  externalReference: string,
+  admin: ReturnType<typeof createAdminClient>
+) {
+  try {
+    // Obtener información del envío
+    const { data: shipment } = await admin
+      .from('shipments')
+      .select('id, title, current_status, pickup_address')
+      .eq('id', externalReference)
+      .single();
+
+    if (shipment) {
+      // Si el envío está en estado "draft", publicarlo (cambiar a "created")
+      if (shipment.current_status === 'draft') {
+        await admin
+          .from('shipments')
+          .update({ current_status: 'created' })
+          .eq('id', shipment.id);
+
+        logger.info('Envío publicado después de pago aprobado', {
+          shipmentId: shipment.id,
+          paymentId: paymentRecord.id,
+        });
+
+        // Notificar a drivers cercanos sobre el nuevo envío disponible
+        try {
+          // Obtener coordenadas de retiro del envío
+          const parsedPickup = parseAddressWithCoordinates(shipment.pickup_address);
+          let pickupLat: number | undefined = parsedPickup.lat;
+          let pickupLng: number | undefined = parsedPickup.lng;
+
+          if (!pickupLat || !pickupLng) {
+            const coords = await geocodeAddress(parsedPickup.address);
+            if (coords) {
+              pickupLat = coords.lat;
+              pickupLng = coords.lng;
+            }
+          }
+
+          if (pickupLat && pickupLng) {
+            // Obtener todos los drivers disponibles
+            const { data: drivers } = await admin
+              .from('profiles')
+              .select('id, latitude, longitude, role')
+              .eq('role', 'driver')
+              .not('latitude', 'is', null)
+              .not('longitude', 'is', null);
+
+            if (drivers && drivers.length > 0) {
+              // Filtrar drivers cercanos (dentro de 10km)
+              const nearbyDrivers = filterNearbyUsers(
+                drivers as any[],
+                pickupLat,
+                pickupLng,
+                10
+              );
+
+              if (nearbyDrivers.length > 0) {
+                const driverIds = nearbyDrivers.map(d => d.id);
+                const { data: tokens } = await admin
+                  .from('push_tokens')
+                  .select('token')
+                  .in('user_id', driverIds);
+
+                const pushTokens = (tokens ?? []).map((t) => t.token);
+                
+                if (pushTokens.length > 0) {
+                  await sendPush(
+                    pushTokens,
+                    'Nuevo envío disponible',
+                    `${shipment.title} - Recoger en: ${parsedPickup.address}`
+                  );
+                  logger.info('Notificaciones enviadas a drivers cercanos', { 
+                    shipmentId: shipment.id, 
+                    driversCount: nearbyDrivers.length 
+                  });
+                }
+              } else {
+                // Si no hay drivers cercanos, notificar a todos
+                const driverIds = drivers.map(d => d.id);
+                const { data: tokens } = await admin
+                  .from('push_tokens')
+                  .select('token')
+                  .in('user_id', driverIds);
+
+                const pushTokens = (tokens ?? []).map((t) => t.token);
+                if (pushTokens.length > 0) {
+                  await sendPush(
+                    pushTokens,
+                    'Nuevo envío disponible',
+                    `${shipment.title} - Recoger en: ${parsedPickup.address}`
+                  );
+                }
+              }
+            }
+          }
+        } catch (notifyError) {
+          logger.error('Error notificando a drivers después de publicar envío', notifyError as Error, { shipmentId: shipment.id });
+        }
+      }
+    }
+
+    // Notificar al usuario que pagó
+    const { data: tokens } = await admin
+      .from('push_tokens')
+      .select('token')
+      .eq('user_id', paymentRecord.payer_id);
+
+    const pushTokens = (tokens ?? []).map((t) => t.token);
+    if (pushTokens.length > 0) {
+      await sendPush(
+        pushTokens,
+        'Pago aprobado',
+        `Tu pago para el envío "${shipment?.title || 'Sin título'}" ha sido aprobado.`
+      );
+    }
+
+    // Crear transferencia pendiente automáticamente si hay driver asignado
+    try {
+      const { data: assignment } = await admin
+        .from('driver_assignments')
+        .select('driver_id')
+        .eq('shipment_id', externalReference)
+        .maybeSingle();
+
+      if (assignment && paymentRecord.driver_amount > 0) {
+        // Verificar que no existe transferencia ya
+        const { data: existingTransfer } = await (admin
+          .from('driver_transfers' as any)
+          .select('id')
+          .eq('payment_id', paymentRecord.id)
+          .maybeSingle() as any);
+
+        if (!existingTransfer) {
+          const { error: transferError } = await (admin
+            .from('driver_transfers' as any)
+            .insert({
+              driver_id: assignment.driver_id,
+              payment_id: paymentRecord.id,
+              amount: paymentRecord.driver_amount,
+              status: 'pending',
+              transfer_method: 'manual',
+              notes: 'Creada automáticamente al aprobarse el pago',
+            }) as any);
+
+          if (transferError) {
+            logger.error('Error creando transferencia automática', transferError as Error, {
+              paymentId: paymentRecord.id,
+              driverId: assignment.driver_id,
+            });
+          } else {
+            logger.info('Transferencia pendiente creada automáticamente', {
+              paymentId: paymentRecord.id,
+              driverId: assignment.driver_id,
+              amount: paymentRecord.driver_amount,
+            });
+          }
+        }
+      }
+    } catch (transferError) {
+      logger.error('Error en proceso de transferencia automática', transferError as Error);
+      // No fallamos el webhook si hay error en la transferencia
+    }
+  } catch (notifyError) {
+    logger.error('Error notificando pago aprobado', notifyError as Error);
+  }
+}
 
 // Schema para crear un pago
 const CreatePaymentBody = z.object({
@@ -183,13 +355,173 @@ router.post('/create', validateBody(CreatePaymentBody), authMiddleware, asyncHan
 router.post('/webhook', asyncHandler(async (req, res) => {
   // Mercado Pago envía el webhook de diferentes formas según el tipo
   // Puede venir como query parameter o en el body
+  const topic = req.query.topic as string || req.body.topic;
   const type = req.query.type as string || req.body.type;
-  const data = req.query.data_id as string || req.body.data?.id;
+  const resource = req.query.id as string || req.body.resource || req.body.data?.id;
+  const data = req.query.data_id as string || req.body.data?.id || resource;
 
+  // Manejar merchant_order (viene como query parameter)
+  if (topic === 'merchant_order' && resource) {
+    logger.info('Webhook merchant_order recibido', { merchantOrderId: resource });
+    
+    try {
+      // Obtener la merchant_order desde la API de Mercado Pago
+      const accessToken = env.MERCADOPAGO_ACCESS_TOKEN;
+      if (!accessToken) {
+        logger.error('MERCADOPAGO_ACCESS_TOKEN no configurado');
+        res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: 'Configuración incompleta' });
+        return;
+      }
+
+      // Obtener merchant_order desde la URL del resource
+      const merchantOrderUrl = typeof req.body.resource === 'string' 
+        ? req.body.resource 
+        : `https://api.mercadopago.com/merchant_orders/${resource}`;
+      
+      const merchantOrderResponse = await fetch(merchantOrderUrl, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json',
+        },
+      });
+
+      if (!merchantOrderResponse.ok) {
+        logger.error('Error obteniendo merchant_order', new Error(await merchantOrderResponse.text()), {
+          merchantOrderId: resource,
+          status: merchantOrderResponse.status,
+        });
+        res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: 'Error obteniendo merchant_order' });
+        return;
+      }
+
+      const merchantOrder = await merchantOrderResponse.json();
+      const externalReference = merchantOrder.external_reference;
+      
+      if (!externalReference) {
+        logger.warn('Merchant order sin external_reference', { merchantOrderId: resource });
+        res.status(StatusCodes.BAD_REQUEST).json({ error: 'Merchant order sin referencia' });
+        return;
+      }
+
+      // Obtener los pagos asociados a la merchant_order
+      const payments = merchantOrder.payments || [];
+      
+      if (payments.length === 0) {
+        logger.debug('Merchant order sin pagos aún', { merchantOrderId: resource, shipmentId: externalReference });
+        res.status(StatusCodes.OK).json({ ok: true, message: 'Merchant order sin pagos' });
+        return;
+      }
+
+      // Procesar cada pago asociado
+      const admin = createAdminClient();
+      for (const paymentId of payments) {
+        try {
+          const payment = await getPaymentById(paymentId.toString());
+          
+          if (!payment) {
+            logger.warn('Pago no encontrado en Mercado Pago', { paymentId });
+            continue;
+          }
+
+          // Buscar el pago en nuestra base de datos
+          let { data: paymentRecord } = await admin
+            .from('payments')
+            .select('*')
+            .eq('shipment_id', externalReference)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (!paymentRecord) {
+            logger.warn('Pago no encontrado en BD desde merchant_order', { 
+              shipmentId: externalReference,
+              mpPaymentId: payment.id,
+            });
+            continue;
+          }
+
+          // Actualizar estado del pago (reutilizar lógica existente)
+          const mpStatus = payment.status || 'pending';
+          let dbStatus: 'pending' | 'approved' | 'cancelled' | 'refunded' = 'pending';
+
+          switch (mpStatus.toLowerCase()) {
+            case 'approved':
+            case 'accredited':
+              dbStatus = 'approved';
+              break;
+            case 'cancelled':
+            case 'canceled':
+            case 'rejected':
+            case 'declined':
+              dbStatus = 'cancelled';
+              break;
+            case 'refunded':
+            case 'refund':
+              dbStatus = 'refunded';
+              break;
+            default:
+              dbStatus = 'pending';
+          }
+
+          const updateData: any = {
+            status: dbStatus,
+            payment_id: payment.id?.toString(),
+            payment_data: {
+              ...(paymentRecord.payment_data && typeof paymentRecord.payment_data === 'object' ? paymentRecord.payment_data : {}),
+              mp_payment: payment,
+              merchant_order_id: resource,
+            } as unknown as Json,
+            updated_at: new Date().toISOString(),
+          };
+
+          if (dbStatus === 'approved' && !paymentRecord.paid_at) {
+            updateData.paid_at = new Date().toISOString();
+          }
+
+          await admin
+            .from('payments')
+            .update(updateData)
+            .eq('id', paymentRecord.id);
+
+          logger.info('Pago actualizado desde merchant_order webhook', {
+            paymentId: paymentRecord.id,
+            shipmentId: externalReference,
+            status: dbStatus,
+            merchantOrderId: resource,
+          });
+
+          // Si el pago fue aprobado, procesar como en el webhook normal
+          if (dbStatus === 'approved' && paymentRecord.status !== 'approved') {
+            // Reutilizar la lógica de procesamiento de pago aprobado
+            // Esta lógica está más abajo en el código, la llamamos aquí también
+            await processApprovedPayment(paymentRecord, externalReference, admin);
+          }
+        } catch (paymentError) {
+          logger.error('Error procesando pago desde merchant_order', paymentError as Error, {
+            paymentId,
+            merchantOrderId: resource,
+          });
+        }
+      }
+
+      res.status(StatusCodes.OK).json({ ok: true });
+      return;
+    } catch (error) {
+      logger.error('Error procesando merchant_order webhook', error as Error, {
+        merchantOrderId: resource,
+      });
+      res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: 'Error procesando webhook' });
+      return;
+    }
+  }
+
+  // Manejar webhooks de tipo payment (formato estándar)
   if (!type || !data) {
     logger.warn('Webhook de Mercado Pago recibido sin tipo o data', { 
       body: req.body, 
-      query: req.query 
+      query: req.query,
+      topic,
     });
     res.status(StatusCodes.BAD_REQUEST).json({ error: 'Datos inválidos' });
     return;
@@ -197,7 +529,7 @@ router.post('/webhook', asyncHandler(async (req, res) => {
 
   // Solo procesar payment.created y payment.updated
   if (type !== 'payment' && type !== 'payment.created' && type !== 'payment.updated') {
-    logger.debug('Webhook ignorado (tipo no relevante)', { type, paymentId: data });
+    logger.debug('Webhook ignorado (tipo no relevante)', { type, paymentId: data, topic });
     res.status(StatusCodes.OK).json({ ok: true, message: 'Tipo de webhook ignorado' });
     return;
   }
@@ -332,169 +664,7 @@ router.post('/webhook', asyncHandler(async (req, res) => {
 
     // Si el pago fue aprobado, publicar el envío (cambiar de draft a created) y notificar
     if (dbStatus === 'approved' && paymentRecord.status !== 'approved') {
-      try {
-        // Obtener información del envío
-        const { data: shipment } = await admin
-          .from('shipments')
-          .select('id, title, current_status, pickup_address')
-          .eq('id', externalReference)
-          .single();
-
-        if (shipment) {
-          // Si el envío está en estado "draft", publicarlo (cambiar a "created")
-          if (shipment.current_status === 'draft') {
-            await admin
-              .from('shipments')
-              .update({ current_status: 'created' })
-              .eq('id', shipment.id);
-
-            logger.info('Envío publicado después de pago aprobado', {
-              shipmentId: shipment.id,
-              paymentId: paymentRecord.id,
-            });
-
-            // Notificar a drivers cercanos sobre el nuevo envío disponible
-            try {
-              // Obtener coordenadas de retiro del envío
-              const parsedPickup = parseAddressWithCoordinates(shipment.pickup_address);
-              let pickupLat: number | undefined = parsedPickup.lat;
-              let pickupLng: number | undefined = parsedPickup.lng;
-
-              if (!pickupLat || !pickupLng) {
-                const coords = await geocodeAddress(parsedPickup.address);
-                if (coords) {
-                  pickupLat = coords.lat;
-                  pickupLng = coords.lng;
-                }
-              }
-
-              if (pickupLat && pickupLng) {
-                // Obtener todos los drivers disponibles
-                const { data: drivers } = await admin
-                  .from('profiles')
-                  .select('id, latitude, longitude, role')
-                  .eq('role', 'driver')
-                  .not('latitude', 'is', null)
-                  .not('longitude', 'is', null);
-
-                if (drivers && drivers.length > 0) {
-                  // Filtrar drivers cercanos (dentro de 10km)
-                  const nearbyDrivers = filterNearbyUsers(
-                    drivers as any[],
-                    pickupLat,
-                    pickupLng,
-                    10
-                  );
-
-                  if (nearbyDrivers.length > 0) {
-                    const driverIds = nearbyDrivers.map(d => d.id);
-                    const { data: tokens } = await admin
-                      .from('push_tokens')
-                      .select('token')
-                      .in('user_id', driverIds);
-
-                    const pushTokens = (tokens ?? []).map((t) => t.token);
-                    
-                    if (pushTokens.length > 0) {
-                      await sendPush(
-                        pushTokens,
-                        'Nuevo envío disponible',
-                        `${shipment.title} - Recoger en: ${parsedPickup.address}`
-                      );
-                      logger.info('Notificaciones enviadas a drivers cercanos', { 
-                        shipmentId: shipment.id, 
-                        driversCount: nearbyDrivers.length 
-                      });
-                    }
-                  } else {
-                    // Si no hay drivers cercanos, notificar a todos
-                    const driverIds = drivers.map(d => d.id);
-                    const { data: tokens } = await admin
-                      .from('push_tokens')
-                      .select('token')
-                      .in('user_id', driverIds);
-
-                    const pushTokens = (tokens ?? []).map((t) => t.token);
-                    if (pushTokens.length > 0) {
-                      await sendPush(
-                        pushTokens,
-                        'Nuevo envío disponible',
-                        `${shipment.title} - Recoger en: ${parsedPickup.address}`
-                      );
-                    }
-                  }
-                }
-              }
-            } catch (notifyError) {
-              logger.error('Error notificando a drivers después de publicar envío', notifyError as Error, { shipmentId: shipment.id });
-            }
-          }
-        }
-
-        // Notificar al usuario que pagó
-        const { data: tokens } = await admin
-          .from('push_tokens')
-          .select('token')
-          .eq('user_id', paymentRecord.payer_id);
-
-        const pushTokens = (tokens ?? []).map((t) => t.token);
-        if (pushTokens.length > 0) {
-          await sendPush(
-            pushTokens,
-            'Pago aprobado',
-            `Tu pago para el envío "${shipment?.title || 'Sin título'}" ha sido aprobado.`
-          );
-        }
-
-        // Crear transferencia pendiente automáticamente si hay driver asignado
-        try {
-          const { data: assignment } = await admin
-            .from('driver_assignments')
-            .select('driver_id')
-            .eq('shipment_id', externalReference)
-            .maybeSingle();
-
-          if (assignment && paymentRecord.driver_amount > 0) {
-            // Verificar que no existe transferencia ya
-            const { data: existingTransfer } = await (admin
-              .from('driver_transfers' as any)
-              .select('id')
-              .eq('payment_id', paymentRecord.id)
-              .maybeSingle() as any);
-
-            if (!existingTransfer) {
-              const { error: transferError } = await (admin
-                .from('driver_transfers' as any)
-                .insert({
-                  driver_id: assignment.driver_id,
-                  payment_id: paymentRecord.id,
-                  amount: paymentRecord.driver_amount,
-                  status: 'pending',
-                  transfer_method: 'manual',
-                  notes: 'Creada automáticamente al aprobarse el pago',
-                }) as any);
-
-              if (transferError) {
-                logger.error('Error creando transferencia automática', transferError as Error, {
-                  paymentId: paymentRecord.id,
-                  driverId: assignment.driver_id,
-                });
-              } else {
-                logger.info('Transferencia pendiente creada automáticamente', {
-                  paymentId: paymentRecord.id,
-                  driverId: assignment.driver_id,
-                  amount: paymentRecord.driver_amount,
-                });
-              }
-            }
-          }
-        } catch (transferError) {
-          logger.error('Error en proceso de transferencia automática', transferError as Error);
-          // No fallamos el webhook si hay error en la transferencia
-        }
-      } catch (notifyError) {
-        logger.error('Error notificando pago aprobado', notifyError as Error);
-      }
+      await processApprovedPayment(paymentRecord, externalReference, admin);
     }
 
     res.status(StatusCodes.OK).json({ ok: true });
