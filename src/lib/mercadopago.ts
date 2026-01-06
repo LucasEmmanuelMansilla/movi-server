@@ -461,41 +461,9 @@ export async function getMercadoPagoUser(
 }
 
 /**
- * IMPORTANTE: Mercado Pago NO permite transferencias directas entre cuentas de esta manera.
- * 
- * SOLUCIÓN IMPLEMENTADA:
- * En lugar de transferir automáticamente, registramos la transferencia como "pendiente"
- * en la tabla driver_transfers. El marketplace debe procesar estas transferencias de una de estas formas:
- * 
- * 1. RETIRO MANUAL: El driver retira el dinero desde su panel de Mercado Pago
- * 2. TRANSFERENCIA BANCARIA: El marketplace transfiere a la cuenta bancaria del driver
- * 3. SPLIT DE PAGOS: Implementar split desde el inicio (requiere saber el driver antes del pago)
- * 
- * FLUJO ACTUAL:
- * 1. Business paga → dinero queda en cuenta del marketplace
- * 2. Driver marca entregado → se registra transferencia como "pending"
- * 3. Marketplace procesa manualmente o driver retira fondos
- * 4. Se marca la transferencia como "completed"
- * 
- * Esta función ahora solo REGISTRA la intención de transferencia.
+ * Transfiere dinero del marketplace al driver de forma AUTOMÁTICA
+ * Usa el endpoint de Advanced Payments que permite distribuir fondos
  */
-export interface TransferParams {
-  amount: number;
-  driverUserId: number; // mp_user_id del driver (destinatario de la transferencia)
-  description: string;
-  externalReference?: string; // ID del pago o envío relacionado
-}
-
-export interface TransferResponse {
-  id: number;
-  amount: number;
-  status: string;
-  date_created: string;
-  description: string;
-  external_reference?: string;
-  destination_user_id?: number;
-}
-
 export async function transferToUser(
   params: TransferParams
 ): Promise<TransferResponse> {
@@ -503,36 +471,89 @@ export async function transferToUser(
     throw new Error('driverUserId es requerido para realizar la transferencia');
   }
 
-  // NOTA: Mercado Pago NO permite transferencias automáticas de esta forma
-  // Esta función ahora solo registra la intención de transferencia
-  // La transferencia real debe hacerse manualmente o mediante retiro del driver
-  
-  logger.info('Registrando transferencia pendiente (no automática)', {
-    driverUserId: params.driverUserId,
-    amount: params.amount,
-    description: params.description,
-    externalReference: params.externalReference,
-  });
+  const marketplaceAccessToken = env.MERCADOPAGO_ACCESS_TOKEN;
+  if (!marketplaceAccessToken) {
+    throw new Error('MERCADOPAGO_ACCESS_TOKEN no configurado');
+  }
 
-  // Retornar una respuesta simulada indicando que la transferencia está pendiente
-  const transferResponse: TransferResponse = {
-    id: Date.now(), // ID temporal basado en timestamp
-    amount: params.amount,
-    status: 'pending', // Siempre pendiente - requiere procesamiento manual
-    date_created: new Date().toISOString(),
-    description: params.description,
-    external_reference: params.externalReference,
-    destination_user_id: params.driverUserId,
-  };
-  
-  logger.warn('Transferencia registrada como PENDIENTE - requiere procesamiento manual', {
-    transferId: transferResponse.id,
-    amount: transferResponse.amount,
-    driverUserId: params.driverUserId,
-    note: 'El marketplace debe procesar esta transferencia manualmente o el driver debe retirar los fondos',
-  });
+  const applicationId = env.MP_APPLICATION_ID || env.MP_CLIENT_ID;
+  if (!applicationId) {
+    throw new Error('MP_APPLICATION_ID o MP_CLIENT_ID es requerido');
+  }
 
-  return transferResponse;
+  try {
+    const baseUrl = 'https://api.mercadopago.com';
+
+    // 1. Obtener el ID de usuario del marketplace si no lo tenemos
+    let marketplaceUserId = '';
+    const meRes = await fetch(`${baseUrl}/users/me`, {
+      headers: { 'Authorization': `Bearer ${marketplaceAccessToken}` }
+    });
+    if (meRes.ok) {
+      const meData = await meRes.json();
+      marketplaceUserId = meData.id.toString();
+    }
+
+    // 2. Estructura CORRECTA para Advanced Payments
+    // Este body es el que espera Mercado Pago para transferencias entre cuentas
+    const advancedPaymentBody = {
+      application_id: applicationId,
+      external_reference: params.externalReference,
+      description: params.description,
+      payer: {
+        id: marketplaceUserId, // El marketplace paga con su saldo
+        type: 'customer'
+      },
+      payments: [
+        {
+          payment_method_id: 'account_money',
+          transaction_amount: params.amount,
+        }
+      ],
+      disbursements: [
+        {
+          collector_id: params.driverUserId.toString(), // El driver recibe
+          amount: params.amount,
+          external_reference: params.externalReference
+        }
+      ]
+    };
+
+    logger.info('Iniciando transferencia automática Advanced Payments', {
+      amount: params.amount,
+      driverUserId: params.driverUserId
+    });
+
+    const response = await fetch(`${baseUrl}/v1/advanced_payments`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${marketplaceAccessToken}`,
+        'Content-Type': 'application/json',
+        'X-Idempotency-Key': `transf_${params.externalReference}_${Date.now()}`
+      },
+      body: JSON.stringify(advancedPaymentBody),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      logger.error('Error en Advanced Payments', new Error(JSON.stringify(data)));
+      throw new Error(`MP Error: ${data.message || 'Error desconocido'}`);
+    }
+
+    return {
+      id: data.id,
+      amount: params.amount,
+      status: data.status || 'approved',
+      date_created: new Date().toISOString(),
+      description: params.description,
+      external_reference: params.externalReference,
+      destination_user_id: params.driverUserId
+    };
+  } catch (error) {
+    logger.error('Fallo crítico en transferencia automática', error as Error);
+    throw error;
+  }
 }
 
 export { COMMISSION_PERCENTAGE };

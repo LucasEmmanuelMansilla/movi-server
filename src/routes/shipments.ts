@@ -689,64 +689,56 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
           const { transferToUser } = await import('../lib/mercadopago');
           
           try {
-            // Registrar la transferencia como pendiente
-            // NOTA: Mercado Pago NO permite transferencias automáticas de esta forma
-            // La transferencia debe procesarse manualmente o mediante retiro del driver
+            // EJECUTAR TRANSFERENCIA REAL AUTOMÁTICA
+            // El dinero sale de la cuenta del marketplace hacia el driver
             const transferResult = await transferToUser({
               amount: payment.driver_amount,
               driverUserId: parseInt(driverProfile.mp_user_id),
-              description: `Pago por envío ${shipmentId}`,
+              description: `Pago automático envío ${shipmentId}`,
               externalReference: payment.id,
             });
 
-            logger.info('Transferencia registrada como pendiente', {
+            logger.info('Transferencia automática completada exitosamente', {
               transferId: transferResult.id,
-              paymentId: payment.id,
-              shipmentId,
               driverId: assign.driver_id,
-              amount: payment.driver_amount,
-              status: transferResult.status,
-              note: 'Requiere procesamiento manual o retiro del driver',
+              amount: payment.driver_amount
             });
 
-            // Actualizar o crear el registro de transferencia en driver_transfers
+            // Registrar en la base de datos como completado de una vez
             const { data: existingTransfer } = await (admin
               .from('driver_transfers' as any)
               .select('id')
               .eq('payment_id', payment.id)
               .maybeSingle() as any);
 
+            const transferData = {
+              driver_id: assign.driver_id,
+              payment_id: payment.id,
+              amount: payment.driver_amount,
+              status: 'completed', // ¡AUTOMÁTICO!
+              transfer_method: 'mercadopago',
+              mp_transfer_id: transferResult.id.toString(),
+              transferred_at: new Date().toISOString(),
+              notes: `Transferencia automática exitosa vía Advanced Payments. MP ID: ${transferResult.id}`,
+            };
+
             if (existingTransfer) {
-              await (admin
-                .from('driver_transfers' as any)
-                .update({
-                  status: 'pending',
-                  transfer_method: 'manual',
-                  notes: `Transferencia pendiente. El driver puede retirar los fondos desde su cuenta de Mercado Pago o el marketplace debe transferir manualmente. Monto: $${payment.driver_amount}`,
-                } as any)
-                .eq('id', existingTransfer.id) as any);
+              await (admin.from('driver_transfers' as any).update(transferData).eq('id', existingTransfer.id) as any);
             } else {
-              // Crear nuevo registro de transferencia pendiente
-              await (admin
-                .from('driver_transfers' as any)
-                .insert({
-                  driver_id: assign.driver_id,
-                  payment_id: payment.id,
-                  amount: payment.driver_amount,
-                  status: 'pending',
-                  transfer_method: 'manual',
-                  notes: `Transferencia pendiente. El driver puede retirar los fondos desde su cuenta de Mercado Pago o el marketplace debe transferir manualmente. Monto: $${payment.driver_amount}. MP User ID: ${driverProfile.mp_user_id}`,
-                } as any) as any);
+              await (admin.from('driver_transfers' as any).insert(transferData) as any);
             }
           } catch (transferError) {
-            logger.error('Error registrando transferencia pendiente', transferError as Error, {
-              paymentId: payment.id,
-              shipmentId,
-              driverId: assign.driver_id,
-              driverUserId: driverProfile.mp_user_id,
-            });
-            // No fallamos la entrega si hay error registrando la transferencia
-            // pero lo registramos para revisión manual
+            logger.error('Fallo en transferencia automática, registrando como pendiente para reintento', transferError as Error);
+            
+            // Si falla la API de MP, lo dejamos como pendiente para que el admin lo vea
+            await (admin.from('driver_transfers' as any).upsert({
+              driver_id: assign.driver_id,
+              payment_id: payment.id,
+              amount: payment.driver_amount,
+              status: 'pending',
+              transfer_method: 'manual',
+              notes: `Error en transferencia automática: ${(transferError as Error).message}. Requiere revisión manual.`,
+            }) as any);
           }
         }
       }
