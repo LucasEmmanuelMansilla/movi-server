@@ -1,16 +1,14 @@
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
 import { z } from 'zod';
 import { createAdminClient } from '../lib/supabase';
-import { createPaymentPreference, getPaymentById, calculatePaymentSplit, isPaymentApproved } from '../lib/mercadopago';
+import { createPaymentPreference, getPaymentById, calculatePaymentSplit } from '../lib/mercadopago';
 import { StatusCodes } from 'http-status-codes';
 import asyncHandler from 'express-async-handler';
 import { logger } from '../utils/logger';
-import { validateBody, validateParams, validateQuery } from '../utils/validation';
+import { validateBody, validateParams } from '../utils/validation';
 import type { Role } from '../types';
 import { sendPush } from './push';
-import type { Payment } from '../types/payments';
 import type { Json } from '../supabase.types';
-import { env } from '../env';
 import { parseAddressWithCoordinates, geocodeAddress, filterNearbyUsers } from '../utils/geolocation';
 import { env } from '../env';
 
