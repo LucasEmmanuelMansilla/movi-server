@@ -652,17 +652,36 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
       // Si hay un pago aprobado, transferir el dinero al driver
       if (payment && payment.driver_amount > 0) {
         // Obtener información del driver (mp_user_id y estado de conexión)
-        const { data: driverProfile } = await admin
-          .from('profiles')
-          .select('id, mp_user_id, mp_status, full_name')
-          .eq('id', assign.driver_id)
-          .maybeSingle();
+        let driverProfile: any = null;
+        try {
+          const result = await admin
+            .from('profiles')
+            .select('id, mp_user_id, mp_status, full_name')
+            .eq('id', assign.driver_id)
+            .maybeSingle();
+          driverProfile = result.data as any;
+        } catch (selectError: any) {
+          // Si hay error por campos que no existen, intentar solo con campos básicos
+          if (selectError.code === '42703' || selectError.message?.includes('does not exist')) {
+            const result = await admin
+              .from('profiles')
+              .select('id, full_name')
+              .eq('id', assign.driver_id)
+              .maybeSingle();
+            driverProfile = result.data as any;
+          } else {
+            throw selectError;
+          }
+        }
 
         if (!driverProfile || !driverProfile.mp_user_id || driverProfile.mp_status !== 'connected') {
           logger.warn('Driver no tiene Mercado Pago conectado, no se puede transferir', {
             driverId: assign.driver_id,
             shipmentId,
             paymentId: payment.id,
+            hasProfile: !!driverProfile,
+            hasMpUserId: !!driverProfile?.mp_user_id,
+            mpStatus: driverProfile?.mp_status,
           });
           // No fallamos la entrega, pero registramos el warning
         } else {
