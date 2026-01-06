@@ -460,6 +460,23 @@ export async function getMercadoPagoUser(
   }
 }
 
+export interface TransferParams {
+  driverUserId: string | number;
+  amount: number;
+  externalReference: string;
+  description: string;
+}
+
+export interface TransferResponse {
+  id: string | number;
+  amount: number;
+  status: string;
+  date_created: string;
+  description: string;
+  external_reference: string;
+  destination_user_id: string | number;
+}
+
 /**
  * Transfiere dinero del marketplace al driver de forma AUTOMÁTICA
  * Usa el endpoint de Advanced Payments que permite distribuir fondos
