@@ -689,8 +689,9 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
           const { transferToUser } = await import('../lib/mercadopago');
           
           try {
-            // Realizar la transferencia al driver
-            // El marketplace usa su access_token para transferir dinero al driver
+            // Registrar la transferencia como pendiente
+            // NOTA: Mercado Pago NO permite transferencias automáticas de esta forma
+            // La transferencia debe procesarse manualmente o mediante retiro del driver
             const transferResult = await transferToUser({
               amount: payment.driver_amount,
               driverUserId: parseInt(driverProfile.mp_user_id),
@@ -698,16 +699,17 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
               externalReference: payment.id,
             });
 
-            logger.info('Transferencia realizada exitosamente al driver', {
+            logger.info('Transferencia registrada como pendiente', {
               transferId: transferResult.id,
               paymentId: payment.id,
               shipmentId,
               driverId: assign.driver_id,
               amount: payment.driver_amount,
               status: transferResult.status,
+              note: 'Requiere procesamiento manual o retiro del driver',
             });
 
-            // Actualizar el registro de transferencia en driver_transfers si existe
+            // Actualizar o crear el registro de transferencia en driver_transfers
             const { data: existingTransfer } = await (admin
               .from('driver_transfers' as any)
               .select('id')
@@ -718,37 +720,33 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
               await (admin
                 .from('driver_transfers' as any)
                 .update({
-                  status: 'completed',
-                  transferred_at: new Date().toISOString(),
-                  transfer_method: 'mercadopago',
-                  mp_transfer_id: transferResult.id.toString(),
-                  notes: `Transferencia realizada automáticamente al marcar como entregado. Transfer ID: ${transferResult.id}`,
+                  status: 'pending',
+                  transfer_method: 'manual',
+                  notes: `Transferencia pendiente. El driver puede retirar los fondos desde su cuenta de Mercado Pago o el marketplace debe transferir manualmente. Monto: $${payment.driver_amount}`,
                 } as any)
                 .eq('id', existingTransfer.id) as any);
             } else {
-              // Crear nuevo registro de transferencia
+              // Crear nuevo registro de transferencia pendiente
               await (admin
                 .from('driver_transfers' as any)
                 .insert({
                   driver_id: assign.driver_id,
                   payment_id: payment.id,
                   amount: payment.driver_amount,
-                  status: 'completed',
-                  transfer_method: 'mercadopago',
-                  mp_transfer_id: transferResult.id.toString(),
-                  transferred_at: new Date().toISOString(),
-                  notes: `Transferencia realizada automáticamente al marcar como entregado. Transfer ID: ${transferResult.id}`,
+                  status: 'pending',
+                  transfer_method: 'manual',
+                  notes: `Transferencia pendiente. El driver puede retirar los fondos desde su cuenta de Mercado Pago o el marketplace debe transferir manualmente. Monto: $${payment.driver_amount}. MP User ID: ${driverProfile.mp_user_id}`,
                 } as any) as any);
             }
           } catch (transferError) {
-            logger.error('Error realizando transferencia al driver', transferError as Error, {
+            logger.error('Error registrando transferencia pendiente', transferError as Error, {
               paymentId: payment.id,
               shipmentId,
               driverId: assign.driver_id,
               driverUserId: driverProfile.mp_user_id,
             });
-            // No fallamos la entrega si hay error en la transferencia
-            // pero registramos el error para revisión manual
+            // No fallamos la entrega si hay error registrando la transferencia
+            // pero lo registramos para revisión manual
           }
         }
       }

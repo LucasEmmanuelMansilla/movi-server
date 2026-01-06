@@ -461,22 +461,23 @@ export async function getMercadoPagoUser(
 }
 
 /**
- * Transfiere dinero del marketplace a un driver usando la API de pagos de Mercado Pago
+ * IMPORTANTE: Mercado Pago NO permite transferencias directas entre cuentas de esta manera.
  * 
- * FLUJO COMPLETO:
- * 1. Business paga por el servicio → dinero queda en cuenta del marketplace
- * 2. Driver acepta el envío
- * 3. Driver marca como entregado
- * 4. Se transfiere automáticamente el dinero al driver
+ * SOLUCIÓN IMPLEMENTADA:
+ * En lugar de transferir automáticamente, registramos la transferencia como "pendiente"
+ * en la tabla driver_transfers. El marketplace debe procesar estas transferencias de una de estas formas:
  * 
- * MÉTODO:
- * Usa el endpoint /v1/payments con el access_token del marketplace (remitente)
- * y especifica el collector (destinatario) usando el user_id del driver.
+ * 1. RETIRO MANUAL: El driver retira el dinero desde su panel de Mercado Pago
+ * 2. TRANSFERENCIA BANCARIA: El marketplace transfiere a la cuenta bancaria del driver
+ * 3. SPLIT DE PAGOS: Implementar split desde el inicio (requiere saber el driver antes del pago)
  * 
- * REQUISITOS:
- * - El marketplace debe tener fondos disponibles
- * - El driver debe tener su cuenta de Mercado Pago conectada
- * - Se necesita el mp_user_id del driver
+ * FLUJO ACTUAL:
+ * 1. Business paga → dinero queda en cuenta del marketplace
+ * 2. Driver marca entregado → se registra transferencia como "pending"
+ * 3. Marketplace procesa manualmente o driver retira fondos
+ * 4. Se marca la transferencia como "completed"
+ * 
+ * Esta función ahora solo REGISTRA la intención de transferencia.
  */
 export interface TransferParams {
   amount: number;
@@ -502,132 +503,36 @@ export async function transferToUser(
     throw new Error('driverUserId es requerido para realizar la transferencia');
   }
 
-  const marketplaceAccessToken = env.MERCADOPAGO_ACCESS_TOKEN;
-  if (!marketplaceAccessToken) {
-    throw new Error('MERCADOPAGO_ACCESS_TOKEN no configurado');
-  }
+  // NOTA: Mercado Pago NO permite transferencias automáticas de esta forma
+  // Esta función ahora solo registra la intención de transferencia
+  // La transferencia real debe hacerse manualmente o mediante retiro del driver
+  
+  logger.info('Registrando transferencia pendiente (no automática)', {
+    driverUserId: params.driverUserId,
+    amount: params.amount,
+    description: params.description,
+    externalReference: params.externalReference,
+  });
 
-  try {
-    const baseUrl = isSandbox 
-      ? 'https://api.mercadopago.com'
-      : 'https://api.mercadopago.com';
+  // Retornar una respuesta simulada indicando que la transferencia está pendiente
+  const transferResponse: TransferResponse = {
+    id: Date.now(), // ID temporal basado en timestamp
+    amount: params.amount,
+    status: 'pending', // Siempre pendiente - requiere procesamiento manual
+    date_created: new Date().toISOString(),
+    description: params.description,
+    external_reference: params.externalReference,
+    destination_user_id: params.driverUserId,
+  };
+  
+  logger.warn('Transferencia registrada como PENDIENTE - requiere procesamiento manual', {
+    transferId: transferResponse.id,
+    amount: transferResponse.amount,
+    driverUserId: params.driverUserId,
+    note: 'El marketplace debe procesar esta transferencia manualmente o el driver debe retirar los fondos',
+  });
 
-    // Obtener el user_id del marketplace para usarlo como payer
-    // Primero intentamos obtenerlo desde la API de Mercado Pago
-    let marketplaceUserId: string | null = null;
-    try {
-      const userResponse = await fetch(`${baseUrl}/users/me`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${marketplaceAccessToken}`,
-          'Accept': 'application/json',
-        },
-      });
-
-      if (userResponse.ok) {
-        const userData = await userResponse.json();
-        marketplaceUserId = userData.id?.toString() || null;
-      }
-    } catch (userError) {
-      logger.warn('No se pudo obtener el user_id del marketplace, continuando sin él', {
-        error: userError instanceof Error ? userError.message : String(userError),
-      });
-    }
-
-    // Crear un pago usando el access_token del marketplace (remitente)
-    // El collector es el driver que recibirá el dinero
-    const paymentData: any = {
-      transaction_amount: params.amount,
-      description: params.description,
-      payment_method_id: 'account_money', // Transferencia directa desde cuenta
-      collector: {
-        id: params.driverUserId.toString(), // ID del driver que recibirá
-      },
-    };
-
-    // Si tenemos el user_id del marketplace, lo usamos como payer
-    if (marketplaceUserId) {
-      paymentData.payer = {
-        type: 'customer',
-        id: marketplaceUserId,
-      };
-    } else {
-      // Si no tenemos el user_id, usamos email (puede no funcionar en todos los casos)
-      paymentData.payer = {
-        email: 'marketplace@movi.com',
-      };
-    }
-
-    if (params.externalReference) {
-      paymentData.external_reference = params.externalReference;
-    }
-
-    logger.debug('Intentando transferencia usando endpoint de pagos', {
-      driverUserId: params.driverUserId,
-      marketplaceUserId,
-      amount: params.amount,
-      description: params.description,
-    });
-
-    const response = await fetch(`${baseUrl}/v1/payments`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${marketplaceAccessToken}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'X-Idempotency-Key': `${params.externalReference || 'transfer'}-${Date.now()}`,
-      },
-      body: JSON.stringify(paymentData),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      logger.error('Error realizando transferencia', new Error(errorText), {
-        status: response.status,
-        statusText: response.statusText,
-        params: {
-          amount: params.amount,
-          description: params.description,
-          driverUserId: params.driverUserId,
-          marketplaceUserId,
-        },
-        requestBody: paymentData,
-      });
-      throw new Error(`Error en transferencia: ${response.status} - ${errorText}`);
-    }
-
-    const data = await response.json();
-    
-    // Mapear la respuesta del pago a nuestro formato de transferencia
-    const transferResponse: TransferResponse = {
-      id: data.id || 0,
-      amount: data.transaction_amount || data.amount || params.amount,
-      status: data.status || 'pending',
-      date_created: data.date_created || new Date().toISOString(),
-      description: data.description || params.description,
-      external_reference: data.external_reference || params.externalReference,
-      destination_user_id: params.driverUserId,
-    };
-    
-    logger.info('Transferencia realizada exitosamente', {
-      transferId: transferResponse.id,
-      paymentId: data.id,
-      amount: transferResponse.amount,
-      status: transferResponse.status,
-      driverUserId: params.driverUserId,
-    });
-
-    return transferResponse;
-  } catch (error) {
-    logger.error('Error realizando transferencia', error as Error, { 
-      params: {
-        amount: params.amount,
-        description: params.description,
-        driverUserId: params.driverUserId,
-      }
-    });
-    throw error;
-  }
+  return transferResponse;
 }
 
 export { COMMISSION_PERCENTAGE };
