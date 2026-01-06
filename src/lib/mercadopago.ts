@@ -461,25 +461,26 @@ export async function getMercadoPagoUser(
 }
 
 /**
- * Transfiere dinero a un usuario usando Advanced Payments API de Mercado Pago
+ * Transfiere dinero del marketplace a un driver usando la API de pagos de Mercado Pago
  * 
- * Esta función usa Advanced Payments para transferir dinero del marketplace al driver
- * después de que se haya recibido un pago. El marketplace debe tener fondos disponibles.
+ * FLUJO COMPLETO:
+ * 1. Business paga por el servicio → dinero queda en cuenta del marketplace
+ * 2. Driver acepta el envío
+ * 3. Driver marca como entregado
+ * 4. Se transfiere automáticamente el dinero al driver
  * 
- * FLUJO:
- * 1. El business paga por el servicio (C2C)
- * 2. El dinero queda depositado en la cuenta del marketplace
- * 3. Cuando el driver marca entregado y el business confirma, se transfiere el dinero al driver
+ * MÉTODO:
+ * Usa el endpoint /v1/payments con el access_token del marketplace (remitente)
+ * y especifica el collector (destinatario) usando el user_id del driver.
  * 
  * REQUISITOS:
- * - El driver debe tener su cuenta de Mercado Pago conectada (OAuth completado)
- * - El marketplace debe tener fondos disponibles en su cuenta
- * - Se necesita el mp_user_id del driver (obtenido durante el OAuth)
+ * - El marketplace debe tener fondos disponibles
+ * - El driver debe tener su cuenta de Mercado Pago conectada
+ * - Se necesita el mp_user_id del driver
  */
 export interface TransferParams {
   amount: number;
   driverUserId: number; // mp_user_id del driver (destinatario de la transferencia)
-  driverAccessToken?: string; // access_token del driver (opcional, para método alternativo)
   description: string;
   externalReference?: string; // ID del pago o envío relacionado
 }
@@ -506,113 +507,101 @@ export async function transferToUser(
     throw new Error('MERCADOPAGO_ACCESS_TOKEN no configurado');
   }
 
-  // Obtener el application_id del marketplace (necesario para Advanced Payments)
-  const applicationId = env.MP_APPLICATION_ID || env.MP_CLIENT_ID;
-  if (!applicationId) {
-    throw new Error('MP_APPLICATION_ID o MP_CLIENT_ID es requerido para Advanced Payments');
-  }
-
   try {
     const baseUrl = isSandbox 
       ? 'https://api.mercadopago.com'
       : 'https://api.mercadopago.com';
 
-    // Intentar usar el endpoint de pagos con el access_token del driver
-    // Esto crea un pago que se acredita a la cuenta del driver usando el dinero del marketplace
-    // NOTA: Esto requiere que el marketplace tenga fondos disponibles
-    let response: Response;
-    
-    if (params.driverAccessToken) {
-      // Método 1: Usar access_token del driver para crear un pago a su favor
-      // El marketplace debe tener fondos y crear el pago usando el token del driver
-      const paymentData = {
-        transaction_amount: params.amount,
-        description: params.description,
-        payment_method_id: 'account_money',
-        payer: {
-          email: 'marketplace@movi.com', // Email del marketplace
-        },
-        ...(params.externalReference && { external_reference: params.externalReference }),
-      };
-
-      logger.debug('Intentando transferencia usando access_token del driver', {
-        driverUserId: params.driverUserId,
-        amount: params.amount,
-      });
-
-      response = await fetch(`${baseUrl}/v1/payments`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${params.driverAccessToken}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'X-Idempotency-Key': `${params.externalReference || 'transfer'}-${Date.now()}`,
-        },
-        body: JSON.stringify(paymentData),
-      });
-    } else {
-      // Método 2: Intentar Advanced Payments (puede no estar disponible)
-      const advancedPaymentData = {
-        application_id: applicationId.toString(),
-        payer: {
-          id: params.driverUserId.toString(), // Driver que recibirá
-        },
-        payments: [
-          {
-            payment_method_id: 'account_money',
-            payment_type_id: 'account_money',
-            transaction_amount: params.amount,
-            description: params.description,
-          },
-        ],
-        disbursements: [
-          {
-            collector_id: params.driverUserId.toString(),
-            amount: params.amount,
-          },
-        ],
-        ...(params.externalReference && { external_reference: params.externalReference }),
-      };
-
-      logger.debug('Intentando transferencia con Advanced Payments', {
-        applicationId,
-        driverUserId: params.driverUserId,
-        amount: params.amount,
-      });
-
-      response = await fetch(`${baseUrl}/v1/advanced_payments`, {
-        method: 'POST',
+    // Obtener el user_id del marketplace para usarlo como payer
+    // Primero intentamos obtenerlo desde la API de Mercado Pago
+    let marketplaceUserId: string | null = null;
+    try {
+      const userResponse = await fetch(`${baseUrl}/users/me`, {
+        method: 'GET',
         headers: {
           'Authorization': `Bearer ${marketplaceAccessToken}`,
-          'Content-Type': 'application/json',
           'Accept': 'application/json',
-          'X-Idempotency-Key': `${params.externalReference || 'transfer'}-${Date.now()}`,
         },
-        body: JSON.stringify(advancedPaymentData),
+      });
+
+      if (userResponse.ok) {
+        const userData = await userResponse.json();
+        marketplaceUserId = userData.id?.toString() || null;
+      }
+    } catch (userError) {
+      logger.warn('No se pudo obtener el user_id del marketplace, continuando sin él', {
+        error: userError instanceof Error ? userError.message : String(userError),
       });
     }
 
+    // Crear un pago usando el access_token del marketplace (remitente)
+    // El collector es el driver que recibirá el dinero
+    const paymentData: any = {
+      transaction_amount: params.amount,
+      description: params.description,
+      payment_method_id: 'account_money', // Transferencia directa desde cuenta
+      collector: {
+        id: params.driverUserId.toString(), // ID del driver que recibirá
+      },
+    };
+
+    // Si tenemos el user_id del marketplace, lo usamos como payer
+    if (marketplaceUserId) {
+      paymentData.payer = {
+        type: 'customer',
+        id: marketplaceUserId,
+      };
+    } else {
+      // Si no tenemos el user_id, usamos email (puede no funcionar en todos los casos)
+      paymentData.payer = {
+        email: 'marketplace@movi.com',
+      };
+    }
+
+    if (params.externalReference) {
+      paymentData.external_reference = params.externalReference;
+    }
+
+    logger.debug('Intentando transferencia usando endpoint de pagos', {
+      driverUserId: params.driverUserId,
+      marketplaceUserId,
+      amount: params.amount,
+      description: params.description,
+    });
+
+    const response = await fetch(`${baseUrl}/v1/payments`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${marketplaceAccessToken}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'X-Idempotency-Key': `${params.externalReference || 'transfer'}-${Date.now()}`,
+      },
+      body: JSON.stringify(paymentData),
+    });
+
     if (!response.ok) {
       const errorText = await response.text();
-      logger.error('Error realizando transferencia con Advanced Payments', new Error(errorText), {
+      logger.error('Error realizando transferencia', new Error(errorText), {
         status: response.status,
         statusText: response.statusText,
         params: {
           amount: params.amount,
           description: params.description,
           driverUserId: params.driverUserId,
-          applicationId,
+          marketplaceUserId,
         },
+        requestBody: paymentData,
       });
       throw new Error(`Error en transferencia: ${response.status} - ${errorText}`);
     }
 
     const data = await response.json();
     
-    // Mapear la respuesta de Advanced Payments a nuestro formato de transferencia
+    // Mapear la respuesta del pago a nuestro formato de transferencia
     const transferResponse: TransferResponse = {
       id: data.id || 0,
-      amount: data.amount || params.amount,
+      amount: data.transaction_amount || data.amount || params.amount,
       status: data.status || 'pending',
       date_created: data.date_created || new Date().toISOString(),
       description: data.description || params.description,
@@ -620,11 +609,11 @@ export async function transferToUser(
       destination_user_id: params.driverUserId,
     };
     
-    logger.info('Transferencia realizada exitosamente con Advanced Payments', {
+    logger.info('Transferencia realizada exitosamente', {
       transferId: transferResponse.id,
+      paymentId: data.id,
       amount: transferResponse.amount,
       status: transferResponse.status,
-      advancedPaymentId: data.id,
       driverUserId: params.driverUserId,
     });
 
