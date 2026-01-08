@@ -259,7 +259,7 @@ router.get('/', validateQuery(ListShipmentsQuery), asyncHandler(async (req, res)
       if (role === 'business') {
         const { data, error } = await admin
           .from('shipments')
-          .select('*')
+          .select('*, driver_assignments(driver_id)')
           .eq('created_by', user.sub)
           .order('created_at', { ascending: false });
         
@@ -282,7 +282,7 @@ router.get('/', validateQuery(ListShipmentsQuery), asyncHandler(async (req, res)
 
         const { data, error } = await admin
           .from('shipments')
-          .select('*')
+          .select('*, driver_assignments(driver_id)')
           .in('id', ids)
           .order('created_at', { ascending: false });
 
