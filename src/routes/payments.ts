@@ -140,6 +140,12 @@ async function processApprovedPayment(
         .maybeSingle();
 
       if (assignment && paymentRecord.driver_amount > 0) {
+        // Vincular el driver_id al pago si hay una asignación
+        await admin
+          .from('payments')
+          .update({ driver_id: assignment.driver_id })
+          .eq('id', paymentRecord.id);
+
         // Verificar que no existe transferencia ya
         const { data: existingTransfer } = await (admin
           .from('driver_transfers' as any)
@@ -746,6 +752,24 @@ router.get('/shipment/:shipmentId', validateParams(GetPaymentParams), authMiddle
   if (!payment) {
     res.status(StatusCodes.NOT_FOUND).json({ error: 'Pago no encontrado' });
     return;
+  }
+
+  // Si el pago no tiene driver_id pero existe una asignación, lo recuperamos
+  // Esto corrige datos históricos y asegura que el frontend tenga el ID para transferencias
+  if (!payment.driver_id) {
+    const { data: assignment } = await admin
+      .from('driver_assignments')
+      .select('driver_id')
+      .eq('shipment_id', shipmentId)
+      .maybeSingle();
+    
+    if (assignment) {
+      payment.driver_id = assignment.driver_id;
+      // Actualizar en segundo plano para futuras consultas
+      admin.from('payments').update({ driver_id: assignment.driver_id }).eq('id', payment.id).then(({ error: updateErr }) => {
+        if (updateErr) logger.warn('Error actualizando driver_id faltante en pago', { error: updateErr, paymentId: payment.id });
+      });
+    }
   }
 
   // Ocultar información sensible si es el driver

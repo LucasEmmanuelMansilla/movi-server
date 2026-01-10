@@ -435,6 +435,23 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
     return;
   }
 
+  // Actualizar el driver_id en la tabla de pagos para que el pago esté vinculado al conductor
+  // Esto es necesario para que el frontend pueda procesar transferencias y mostrar información correcta
+  try {
+    const { error: pErr } = await admin
+      .from('payments')
+      .update({ driver_id: user.sub })
+      .eq('shipment_id', shipmentId);
+    
+    if (pErr) {
+      logger.warn('No se pudo actualizar el driver_id en el pago', { error: pErr, shipmentId, driverId: user.sub });
+    } else {
+      logger.info('Pago vinculado al conductor exitosamente', { shipmentId, driverId: user.sub });
+    }
+  } catch (err) {
+    logger.warn('Error al intentar vincular el pago al conductor', { error: err, shipmentId });
+  }
+
   await admin.from('shipment_statuses').insert({ 
     shipment_id: shipmentId, 
     status: 'assigned', 
@@ -665,13 +682,26 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
     try {
       const { data: payment } = await admin
         .from('payments')
-        .select('id, status, driver_amount, shipment_id')
+        .select('id, status, driver_amount, shipment_id, driver_id')
         .eq('shipment_id', shipmentId)
         .eq('status', 'approved')
         .maybeSingle();
 
       // Si hay un pago aprobado, transferir el dinero al driver
       if (payment && payment.driver_amount > 0) {
+        // Asegurarse de que el pago tenga el driver_id vinculado
+        if (!payment.driver_id) {
+          await admin
+            .from('payments')
+            .update({ driver_id: assign.driver_id })
+            .eq('id', payment.id);
+          
+          logger.info('Vinculando driver_id al pago durante la entrega', {
+            paymentId: payment.id,
+            driverId: assign.driver_id
+          });
+        }
+
         // Obtener información del driver (mp_user_id y estado de conexión)
         let driverProfile: any = null;
         try {
