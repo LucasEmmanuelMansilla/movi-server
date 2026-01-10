@@ -46,7 +46,16 @@ async function processApprovedPayment(
 
         // Notificar a drivers cercanos sobre el nuevo envío disponible
         try {
-          // Obtener coordenadas de retiro del envío
+          // 1. Emitir evento por Broadcast (Realtime sin réplica)
+          const shipmentChannel = admin.channel('global:shipments');
+          await shipmentChannel.send({
+            type: 'broadcast',
+            event: 'new_shipment',
+            payload: { shipmentId: shipment.id }
+          });
+          logger.info('Evento broadcast enviado para nuevo envío', { shipmentId: shipment.id });
+
+          // 2. Obtener coordenadas de retiro del envío
           const parsedPickup = parseAddressWithCoordinates(shipment.pickup_address);
           let pickupLat: number | undefined = parsedPickup.lat;
           let pickupLng: number | undefined = parsedPickup.lng;
