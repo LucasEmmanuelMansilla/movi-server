@@ -142,13 +142,22 @@ router.post('/', validateBody(CreateShipmentBody), asyncHandler(async (req, res)
   }
 
   // Crear envío en estado "draft" (borrador) - no se publica hasta que se pague
+  // Guardar dirección con coordenadas si están disponibles para evitar geocodificación posterior
+  const finalPickupAddress = pickupLat && pickupLng 
+    ? JSON.stringify({ address: pickupAddress, lat: pickupLat, lng: pickupLng })
+    : body.pickup_address;
+
+  const finalDropoffAddress = dropoffLat && dropoffLng
+    ? JSON.stringify({ address: body.dropoff_address, lat: dropoffLat, lng: dropoffLng })
+    : body.dropoff_address;
+
   const { data, error } = await admin
     .from('shipments')
     .insert({
       title: body.title,
       description: body.description ?? null,
-      pickup_address: body.pickup_address,
-      dropoff_address: body.dropoff_address,
+      pickup_address: finalPickupAddress,
+      dropoff_address: finalDropoffAddress,
       price: calculatedPrice,
       weight: body.weight,
       created_by: user.sub,
@@ -432,6 +441,18 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
     note: 'Driver assigned', 
     created_by: user.sub 
   });
+
+  // Notificar a todos los drivers que el envío ya no está disponible
+  try {
+    const shipmentChannel = admin.channel('global:shipments');
+    await shipmentChannel.send({
+      type: 'broadcast',
+      event: 'shipment_updated',
+      payload: { shipmentId, status: 'assigned' }
+    });
+  } catch (err) {
+    logger.warn('Error enviando broadcast de asignación', { error: err });
+  }
 
   // Actualizar ubicación del driver si se proporciona
   if (req.body.location?.coords) {
