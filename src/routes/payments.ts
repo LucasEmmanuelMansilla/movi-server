@@ -63,8 +63,9 @@ async function processApprovedPayment(
             // Obtener todos los drivers disponibles
             const { data: drivers } = await admin
               .from('profiles')
-              .select('id, latitude, longitude, role')
+              .select('id, latitude, longitude, role, is_available')
               .eq('role', 'driver')
+              .eq('is_available', true)
               .not('latitude', 'is', null)
               .not('longitude', 'is', null);
 
@@ -96,22 +97,6 @@ async function processApprovedPayment(
                     shipmentId: shipment.id, 
                     driversCount: nearbyDrivers.length 
                   });
-                }
-              } else {
-                // Si no hay drivers cercanos, notificar a todos
-                const driverIds = drivers.map(d => d.id);
-                const { data: tokens } = await admin
-                  .from('push_tokens')
-                  .select('token')
-                  .in('user_id', driverIds);
-
-                const pushTokens = (tokens ?? []).map((t) => t.token);
-                if (pushTokens.length > 0) {
-                  await sendPush(
-                    pushTokens,
-                    'Nuevo envío disponible',
-                    `${shipment.title} - Recoger en: ${parsedPickup.address}`
-                  );
                 }
               }
             }
