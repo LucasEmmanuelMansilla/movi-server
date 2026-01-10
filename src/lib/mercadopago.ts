@@ -1,6 +1,7 @@
 import { MercadoPagoConfig, Preference, Payment } from 'mercadopago';
 import { env } from '../env';
 import { logger } from '../utils/logger';
+import crypto from 'crypto';
 
 // Inicializar cliente de Mercado Pago
 const accessToken = env.MERCADOPAGO_ACCESS_TOKEN;
@@ -546,7 +547,7 @@ export async function transferToUser(
       headers: {
         'Authorization': `Bearer ${marketplaceAccessToken}`,
         'Content-Type': 'application/json',
-        'X-Idempotency-Key': `transf_${params.externalReference}_${Date.now()}`
+        'X-Idempotency-Key': crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex')
       },
       body: JSON.stringify(advancedPaymentBody),
     });
