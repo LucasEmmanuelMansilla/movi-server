@@ -302,15 +302,15 @@ router.post('/create', validateBody(CreatePaymentBody), authMiddleware, asyncHan
  */
 router.post('/webhook', asyncHandler(async (req, res) => {
   // Mercado Pago envía el webhook de diferentes formas según el tipo
-  // Puede venir como query parameter o en el body
+  // Normalizar los campos para que funcionen con formatos Webhook e IPN
   const topic = req.query.topic as string || req.body.topic;
-  const type = req.query.type as string || req.body.type;
-  const resource = req.query.id as string || req.body.resource || req.body.data?.id;
-  const data = req.query.data_id as string || req.body.data?.id || resource;
+  const type = req.query.type as string || req.body.type || topic; // Si no hay type, probar con topic
+  const resourceId = req.query.id as string || req.body.resource || req.body.data?.id;
+  const data = req.query.data_id as string || req.body.data?.id || resourceId;
 
-  // Manejar merchant_order (viene como query parameter)
-  if (topic === 'merchant_order' && resource) {
-    logger.info('Webhook merchant_order recibido', { merchantOrderId: resource });
+  // Manejar merchant_order (viene como query parameter o IPN)
+  if (topic === 'merchant_order' && resourceId) {
+    logger.info('Webhook merchant_order recibido', { merchantOrderId: resourceId });
     
     try {
       // Obtener la merchant_order desde la API de Mercado Pago
@@ -321,10 +321,8 @@ router.post('/webhook', asyncHandler(async (req, res) => {
         return;
       }
 
-      // Obtener merchant_order desde la URL del resource
-      const merchantOrderUrl = typeof req.body.resource === 'string' 
-        ? req.body.resource 
-        : `https://api.mercadopago.com/merchant_orders/${resource}`;
+      // Obtener merchant_order desde el ID
+      const merchantOrderUrl = `https://api.mercadopago.com/merchant_orders/${resourceId}`;
       
       const merchantOrderResponse = await fetch(merchantOrderUrl, {
         method: 'GET',
@@ -336,7 +334,7 @@ router.post('/webhook', asyncHandler(async (req, res) => {
 
       if (!merchantOrderResponse.ok) {
         logger.error('Error obteniendo merchant_order', new Error(await merchantOrderResponse.text()), {
-          merchantOrderId: resource,
+          merchantOrderId: resourceId,
           status: merchantOrderResponse.status,
         });
         res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: 'Error obteniendo merchant_order' });
@@ -347,8 +345,8 @@ router.post('/webhook', asyncHandler(async (req, res) => {
       const externalReference = merchantOrder.external_reference;
       
       if (!externalReference) {
-        logger.warn('Merchant order sin external_reference', { merchantOrderId: resource });
-        res.status(StatusCodes.BAD_REQUEST).json({ error: 'Merchant order sin referencia' });
+        logger.warn('Merchant order sin external_reference', { merchantOrderId: resourceId });
+        res.status(StatusCodes.OK).json({ ok: true, message: 'Merchant order sin referencia ignorada' });
         return;
       }
 
@@ -356,19 +354,24 @@ router.post('/webhook', asyncHandler(async (req, res) => {
       const payments = merchantOrder.payments || [];
       
       if (payments.length === 0) {
-        logger.debug('Merchant order sin pagos aún', { merchantOrderId: resource, shipmentId: externalReference });
+        logger.debug('Merchant order sin pagos aún', { merchantOrderId: resourceId, shipmentId: externalReference });
         res.status(StatusCodes.OK).json({ ok: true, message: 'Merchant order sin pagos' });
         return;
       }
 
       // Procesar cada pago asociado
       const admin = createAdminClient();
-      for (const paymentId of payments) {
+      for (const paymentData of payments) {
         try {
-          const payment = await getPaymentById(paymentId.toString());
+          // El paymentData puede ser un ID o un objeto con id
+          const mpPaymentId = typeof paymentData === 'object' ? paymentData.id : paymentData;
+          
+          if (!mpPaymentId) continue;
+
+          const payment = await getPaymentById(mpPaymentId.toString());
           
           if (!payment) {
-            logger.warn('Pago no encontrado en Mercado Pago', { paymentId });
+            logger.warn('Pago no encontrado en Mercado Pago', { paymentId: mpPaymentId });
             continue;
           }
 
@@ -417,27 +420,27 @@ router.post('/webhook', asyncHandler(async (req, res) => {
             payment_id: payment.id?.toString(),
             payment_data: {
               ...(paymentRecord.payment_data && typeof paymentRecord.payment_data === 'object' ? paymentRecord.payment_data : {}),
-              mp_payment: payment,
-              merchant_order_id: resource,
-            } as unknown as Json,
-            updated_at: new Date().toISOString(),
-          };
+            mp_payment: payment,
+            merchant_order_id: resourceId,
+          } as unknown as Json,
+          updated_at: new Date().toISOString(),
+        };
 
-          if (dbStatus === 'approved' && !paymentRecord.paid_at) {
-            updateData.paid_at = new Date().toISOString();
-          }
+        if (dbStatus === 'approved' && !paymentRecord.paid_at) {
+          updateData.paid_at = new Date().toISOString();
+        }
 
-          await admin
-            .from('payments')
-            .update(updateData)
-            .eq('id', paymentRecord.id);
+        await admin
+          .from('payments')
+          .update(updateData)
+          .eq('id', paymentRecord.id);
 
-          logger.info('Pago actualizado desde merchant_order webhook', {
-            paymentId: paymentRecord.id,
-            shipmentId: externalReference,
-            status: dbStatus,
-            merchantOrderId: resource,
-          });
+        logger.info('Pago actualizado desde merchant_order webhook', {
+          paymentId: paymentRecord.id,
+          shipmentId: externalReference,
+          status: dbStatus,
+          merchantOrderId: resourceId,
+        });
 
           // Si el pago fue aprobado, procesar como en el webhook normal
           if (dbStatus === 'approved' && paymentRecord.status !== 'approved') {

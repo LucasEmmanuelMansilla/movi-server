@@ -64,7 +64,8 @@ export async function createPaymentPreference(params: CreatePreferenceParams) {
           id: params.shipmentId,
           title: params.title,
           quantity: 1,
-          unit_price: params.amount,
+          unit_price: Number(params.amount),
+          currency_id: 'ARS',
           // Eliminamos market_place_fee para que el dinero quede 100% en la plataforma
         },
       ],
