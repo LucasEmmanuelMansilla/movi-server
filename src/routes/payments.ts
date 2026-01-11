@@ -450,8 +450,8 @@ router.post('/webhook', asyncHandler(async (req, res) => {
           }
         } catch (paymentError) {
           logger.error('Error procesando pago desde merchant_order', paymentError as Error, {
-            paymentId,
-            merchantOrderId: resource,
+            paymentData,
+            merchantOrderId: resourceId,
           });
         }
       }
@@ -460,7 +460,7 @@ router.post('/webhook', asyncHandler(async (req, res) => {
       return;
     } catch (error) {
       logger.error('Error procesando merchant_order webhook', error as Error, {
-        merchantOrderId: resource,
+        merchantOrderId: resourceId,
       });
       res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: 'Error procesando webhook' });
       return;
