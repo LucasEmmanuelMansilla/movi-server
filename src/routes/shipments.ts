@@ -689,114 +689,96 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
 
       // Si hay un pago aprobado, transferir el dinero al driver
       if (payment && payment.driver_amount > 0) {
-        // Asegurarse de que el pago tenga el driver_id vinculado
-        if (!payment.driver_id) {
-          await admin
-            .from('payments')
-            .update({ driver_id: assign.driver_id })
-            .eq('id', payment.id);
-          
-          logger.info('Vinculando driver_id al pago durante la entrega', {
-            paymentId: payment.id,
-            driverId: assign.driver_id
-          });
-        }
+        // 1. IDEMPOTENCIA: Verificar si ya existe una transferencia COMPLETADA para este pago
+        const { data: existingTransfer } = await (admin
+          .from('driver_transfers' as any)
+          .select('id, status')
+          .eq('payment_id', payment.id)
+          .eq('status', 'completed')
+          .maybeSingle() as any);
 
-        // Obtener información del driver (mp_user_id y estado de conexión)
-        let driverProfile: any = null;
-        try {
-          const result = await admin
+        if (existingTransfer) {
+          logger.info('Transferencia ya completada previamente, omitiendo duplicado', {
+            paymentId: payment.id,
+            transferId: existingTransfer.id
+          });
+        } else {
+          // Asegurarse de que el pago tenga el driver_id vinculado
+          if (!payment.driver_id) {
+            await admin
+              .from('payments')
+              .update({ driver_id: assign.driver_id })
+              .eq('id', payment.id);
+          }
+
+          // Obtener información del driver
+          const { data: driverProfile } = await admin
             .from('profiles')
-            .select('id, mp_user_id, mp_status, full_name')
+            .select('id, mp_user_id, mp_status')
             .eq('id', assign.driver_id)
             .maybeSingle();
-          driverProfile = result.data as any;
-        } catch (selectError: any) {
-          // Si hay error por campos que no existen, intentar solo con campos básicos
-          if (selectError.code === '42703' || selectError.message?.includes('does not exist')) {
-            const result = await admin
-              .from('profiles')
-              .select('id, full_name')
-              .eq('id', assign.driver_id)
-              .maybeSingle();
-            driverProfile = result.data as any;
-          } else {
-            throw selectError;
-          }
-        }
 
-        if (!driverProfile || !driverProfile.mp_user_id || driverProfile.mp_status !== 'connected') {
-          logger.warn('Driver no tiene Mercado Pago conectado, no se puede transferir', {
-            driverId: assign.driver_id,
-            shipmentId,
-            paymentId: payment.id,
-            hasProfile: !!driverProfile,
-            hasMpUserId: !!driverProfile?.mp_user_id,
-            mpStatus: driverProfile?.mp_status,
-          });
-          // No fallamos la entrega, pero registramos el warning
-        } else {
-          // Importar la función de transferencia
-          const { transferToUser } = await import('../lib/mercadopago');
-          
-          try {
-            // EJECUTAR TRANSFERENCIA REAL AUTOMÁTICA
-            // El dinero sale de la cuenta del marketplace hacia el driver
-            const transferResult = await transferToUser({
-              amount: payment.driver_amount,
-              driverUserId: parseInt(driverProfile.mp_user_id),
-              description: `Pago automático envío ${shipmentId}`,
-              externalReference: payment.id,
-            });
-
-            logger.info('Transferencia automática completada exitosamente', {
-              transferId: transferResult.id,
+          if (!driverProfile || !driverProfile.mp_user_id || driverProfile.mp_status !== 'connected') {
+            logger.warn('Driver no apto para transferencia automática', {
               driverId: assign.driver_id,
-              amount: payment.driver_amount
+              mpStatus: driverProfile?.mp_status
             });
-
-            // Registrar en la base de datos como completado de una vez
-            const { data: existingTransfer } = await (admin
-              .from('driver_transfers' as any)
-              .select('id')
-              .eq('payment_id', payment.id)
-              .maybeSingle() as any);
-
-            const transferData = {
-              driver_id: assign.driver_id,
-              payment_id: payment.id,
-              amount: payment.driver_amount,
-              status: 'completed', // ¡AUTOMÁTICO!
-              transfer_method: 'mercadopago',
-              mp_transfer_id: transferResult.id.toString(),
-              transferred_at: new Date().toISOString(),
-              notes: `Transferencia automática exitosa vía Advanced Payments. MP ID: ${transferResult.id}`,
-            };
-
-            if (existingTransfer) {
-              await (admin.from('driver_transfers' as any).update(transferData).eq('id', existingTransfer.id) as any);
-            } else {
-              await (admin.from('driver_transfers' as any).insert(transferData) as any);
-            }
-          } catch (transferError) {
-            logger.error('Fallo en transferencia automática, registrando como pendiente para reintento', transferError as Error);
             
-            // Si falla la API de MP, lo dejamos como pendiente para que el admin lo vea
+            // Registrar como pendiente por falta de conexión
             await (admin.from('driver_transfers' as any).upsert({
               driver_id: assign.driver_id,
               payment_id: payment.id,
               amount: payment.driver_amount,
               status: 'pending',
               transfer_method: 'manual',
-              notes: `Error en transferencia automática: ${(transferError as Error).message}. Requiere revisión manual.`,
+              notes: 'Driver no tiene Mercado Pago conectado. Requiere acción manual.',
             }) as any);
+          } else {
+            const { transferToUser } = await import('../lib/mercadopago');
+            
+            try {
+              // EJECUTAR TRANSFERENCIA CON IDEMPOTENCIA
+              const transferResult = await transferToUser({
+                amount: payment.driver_amount,
+                driverUserId: parseInt(driverProfile.mp_user_id),
+                description: `Pago automático envío ${shipmentId}`,
+                externalReference: payment.id,
+                idempotencyKey: `payout-${payment.id}` // Clave de idempotencia única por pago
+              });
+
+              // Registrar éxito
+              await (admin.from('driver_transfers' as any).upsert({
+                driver_id: assign.driver_id,
+                payment_id: payment.id,
+                amount: payment.driver_amount,
+                status: 'completed',
+                transfer_method: 'mercadopago',
+                mp_transfer_id: transferResult.id.toString(),
+                transferred_at: new Date().toISOString(),
+                notes: `Transferencia automática exitosa. MP ID: ${transferResult.id}`,
+              }) as any);
+
+              logger.info('Pago al driver procesado exitosamente', { shipmentId, transferId: transferResult.id });
+            } catch (transferError: any) {
+              logger.error('Error en transferencia automática MP', transferError);
+              
+              // Registrar fallo con mensaje de error
+              await (admin.from('driver_transfers' as any).upsert({
+                driver_id: assign.driver_id,
+                payment_id: payment.id,
+                amount: payment.driver_amount,
+                status: 'failed',
+                transfer_method: 'mercadopago',
+                notes: `Fallo: ${transferError.message}`,
+                // Usar un campo para el error si existe, sino en notes
+                error_message: transferError.message 
+              }) as any);
+            }
           }
         }
       }
     } catch (paymentError) {
-      logger.error('Error procesando transferencia de pago', paymentError as Error, { shipmentId });
-      // No fallamos la entrega si hay error en el procesamiento de pagos
-      // pero lo registramos para revisión manual
+      logger.error('Error crítico en flujo de pago al driver', paymentError as Error);
     }
   }
 

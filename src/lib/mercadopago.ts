@@ -65,7 +65,7 @@ export async function createPaymentPreference(params: CreatePreferenceParams) {
           title: params.title,
           quantity: 1,
           unit_price: params.amount,
-          market_place_fee: params.amount * COMMISSION_PERCENTAGE / 100,
+          // Eliminamos market_place_fee para que el dinero quede 100% en la plataforma
         },
       ],
       payer: {
@@ -296,7 +296,11 @@ export async function exchangeOAuthCode(
   }
 
   if (!clientSecret) {
-    throw new Error('MP_CLIENT_SECRET es requerido para el intercambio de tokens OAuth. Este valor corresponde a la SECRET_KEY de tu aplicación de Mercado Pago, disponible en "Detalles de la aplicación > Credenciales". Si no la ves, verifica que tu aplicación esté configurada con el modelo de integración "Marketplace" (debe aparecer después de seleccionar el producto Checkout Pro o Checkout API).');
+    if (env.NODE_ENV === 'production') {
+      throw new Error('MP_CLIENT_SECRET es OBLIGATORIO en producción para OAuth.');
+    }
+    logger.error('❌ MP_CLIENT_SECRET no configurado. El intercambio de tokens de Mercado Pago FALLARÁ.');
+    throw new Error('Falta MP_CLIENT_SECRET. Puedes obtenerlo en "Credenciales de producción" de tu aplicación, incluso para pruebas.');
   }
 
   try {
@@ -358,7 +362,10 @@ export async function refreshOAuthToken(
   }
 
   if (!clientSecret) {
-    throw new Error('MP_CLIENT_SECRET es requerido para refrescar tokens OAuth. Este valor corresponde a la SECRET_KEY de tu aplicación de Mercado Pago, disponible en "Detalles de la aplicación > Credenciales". Si no la ves, verifica que tu aplicación esté configurada con el modelo de integración "Marketplace".');
+    if (env.NODE_ENV === 'production') {
+      throw new Error('MP_CLIENT_SECRET es OBLIGATORIO en producción para refrescar tokens.');
+    }
+    throw new Error('Falta MP_CLIENT_SECRET para refrescar el token OAuth.');
   }
 
   try {
@@ -466,6 +473,7 @@ export interface TransferParams {
   amount: number;
   externalReference: string;
   description: string;
+  idempotencyKey?: string;
 }
 
 export interface TransferResponse {
@@ -547,7 +555,7 @@ export async function transferToUser(
       headers: {
         'Authorization': `Bearer ${marketplaceAccessToken}`,
         'Content-Type': 'application/json',
-        'X-Idempotency-Key': crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex')
+        'X-Idempotency-Key': params.idempotencyKey || (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'))
       },
       body: JSON.stringify(advancedPaymentBody),
     });

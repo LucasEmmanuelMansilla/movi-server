@@ -131,58 +131,8 @@ async function processApprovedPayment(
       );
     }
 
-    // Crear transferencia pendiente automáticamente si hay driver asignado
-    try {
-      const { data: assignment } = await admin
-        .from('driver_assignments')
-        .select('driver_id')
-        .eq('shipment_id', externalReference)
-        .maybeSingle();
-
-      if (assignment && paymentRecord.driver_amount > 0) {
-        // Vincular el driver_id al pago si hay una asignación
-        await admin
-          .from('payments')
-          .update({ driver_id: assignment.driver_id })
-          .eq('id', paymentRecord.id);
-
-        // Verificar que no existe transferencia ya
-        const { data: existingTransfer } = await (admin
-          .from('driver_transfers' as any)
-          .select('id')
-          .eq('payment_id', paymentRecord.id)
-          .maybeSingle() as any);
-
-        if (!existingTransfer) {
-          const { error: transferError } = await (admin
-            .from('driver_transfers' as any)
-            .insert({
-              driver_id: assignment.driver_id,
-              payment_id: paymentRecord.id,
-              amount: paymentRecord.driver_amount,
-              status: 'pending',
-              transfer_method: 'manual',
-              notes: 'Creada automáticamente al aprobarse el pago',
-            }) as any);
-
-          if (transferError) {
-            logger.error('Error creando transferencia automática', transferError as Error, {
-              paymentId: paymentRecord.id,
-              driverId: assignment.driver_id,
-            });
-          } else {
-            logger.info('Transferencia pendiente creada automáticamente', {
-              paymentId: paymentRecord.id,
-              driverId: assignment.driver_id,
-              amount: paymentRecord.driver_amount,
-            });
-          }
-        }
-      }
-    } catch (transferError) {
-      logger.error('Error en proceso de transferencia automática', transferError as Error);
-      // No fallamos el webhook si hay error en la transferencia
-    }
+    // Nota: La transferencia al driver ya no se crea aquí. 
+    // Se creará y ejecutará automáticamente cuando el envío pase a estado 'completed'.
   } catch (notifyError) {
     logger.error('Error notificando pago aprobado', notifyError as Error);
   }
@@ -276,11 +226,8 @@ router.post('/create', validateBody(CreatePaymentBody), authMiddleware, asyncHan
   }
 
   try {
-    // Calcular split de pagos
-    const split = calculatePaymentSplit(shipment.price);
-
     // Crear preferencia de pago en Mercado Pago
-    const apiUrl = env.API_URL || process.env.API_URL || 'http://192.168.1.35:4000';
+    const apiUrl = env.API_URL;
     const preference = await createPaymentPreference({
       shipmentId,
       title: shipment.title,
@@ -295,6 +242,9 @@ router.post('/create', validateBody(CreatePaymentBody), authMiddleware, asyncHan
     });
 
     // Guardar información del pago en la base de datos
+    // El split se guardará pero no se usará en MP en este momento
+    const split = calculatePaymentSplit(shipment.price);
+
     const { data: paymentRecord, error: paymentError } = await admin
       .from('payments')
       .insert({

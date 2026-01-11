@@ -14,17 +14,21 @@ const envSchema = z.object({
   SUPABASE_JWT_SECRET: z.string().min(1, "Falta SUPABASE_JWT_SECRET").optional(),
 
   // Mercado Pago
-  MERCADOPAGO_ACCESS_TOKEN: z.string().optional(), // Access token del marketplace
-  MERCADOPAGO_PUBLIC_KEY: z.string().optional(),
-  COMMISSION_PERCENTAGE: z.string().default('10'), // Porcentaje de comisión (por defecto 10%)
-  // OAuth de Mercado Pago
-  MP_APPLICATION_ID: z.string().optional(), // Application ID de la aplicación OAuth (reemplaza a client_id)
-  MP_CLIENT_ID: z.string().optional(), // Client ID (deprecated, usar MP_APPLICATION_ID)
-  MP_CLIENT_SECRET: z.string().optional(), // Client Secret de la aplicación OAuth
-  MP_REDIRECT_URI: z.string().url("MP_REDIRECT_URI debe ser una URL válida").optional(), // URI de redirección para OAuth
+  MERCADOPAGO_ACCESS_TOKEN: z.string().min(1, "MERCADOPAGO_ACCESS_TOKEN es requerido"),
+  MERCADOPAGO_PUBLIC_KEY: z.string().min(1, "MERCADOPAGO_PUBLIC_KEY es requerido"),
+  COMMISSION_PERCENTAGE: z.string().default('10'), // Porcentaje de comisión
+  
+  // OAuth y Transferencias de Mercado Pago
+  MP_APPLICATION_ID: z.string().optional(), // Opcional si se usa MP_CLIENT_ID
+  MP_CLIENT_ID: z.string().optional(), // Alias para MP_APPLICATION_ID en algunas versiones
+  MP_CLIENT_SECRET: z.string().optional(), // Opcional en desarrollo para no bloquear el inicio
+  MP_REDIRECT_URI: z.string().url("MP_REDIRECT_URI debe ser una URL válida"),
+  
+  // Webhook Secret (para validación de seguridad si se desea implementar)
+  MP_WEBHOOK_SECRET: z.string().optional(),
   
   // URL del servidor (para back_urls y webhooks)
-  API_URL: z.string().url("API_URL debe ser una URL válida").optional(),
+  API_URL: z.string().url("API_URL debe ser una URL válida"),
   
   // Opcionales
   EXPO_ACCESS_TOKEN: z.string().optional(),

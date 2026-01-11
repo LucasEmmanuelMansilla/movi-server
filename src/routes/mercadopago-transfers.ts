@@ -264,32 +264,22 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
         .eq('payment_id', payment_id)
         .maybeSingle() as any);
 
+      const transferData = {
+        driver_id: driver_id,
+        payment_id: payment_id,
+        amount: amount,
+        status: 'completed',
+        transfer_method: 'mercadopago',
+        mp_transfer_id: transferResult.id.toString(), // También sirve como payout_id
+        transferred_at: new Date().toISOString(),
+        notes: `Transferencia realizada vía Mercado Pago. ID: ${transferResult.id}`,
+        error_message: null
+      };
+
       if (existingTransfer) {
-        // Actualizar transferencia existente
-        await (admin
-          .from('driver_transfers' as any)
-          .update({
-            status: 'completed',
-            transferred_at: new Date().toISOString(),
-            transfer_method: 'mercadopago',
-            mp_transfer_id: transferResult.id.toString(),
-            notes: `Transferencia realizada vía Mercado Pago. Transfer ID: ${transferResult.id}`,
-          } as any)
-          .eq('id', existingTransfer.id) as any);
+        await (admin.from('driver_transfers' as any).update(transferData).eq('id', existingTransfer.id) as any);
       } else {
-        // Crear nueva transferencia
-        await (admin
-          .from('driver_transfers' as any)
-          .insert({
-            driver_id: driver_id,
-            payment_id: payment_id,
-            amount: amount,
-            status: 'completed',
-            transfer_method: 'mercadopago',
-            mp_transfer_id: transferResult.id.toString(),
-            transferred_at: new Date().toISOString(),
-            notes: `Transferencia realizada vía Mercado Pago. Transfer ID: ${transferResult.id}`,
-          } as any) as any);
+        await (admin.from('driver_transfers' as any).insert(transferData) as any);
       }
     }
 
