@@ -62,9 +62,9 @@ router.get('/', validateQuery(ListTransfersQuery), authMiddleware, asyncHandler(
     return;
   }
 
-  // Construir query (usar as any temporalmente hasta actualizar tipos de Supabase)
-  let query = (admin
-    .from('driver_transfers' as any)
+  // Construir query
+  let query = admin
+    .from('driver_transfers')
     .select(`
       *,
       driver:profiles!driver_transfers_driver_id_fkey(id, full_name, email, phone),
@@ -79,7 +79,7 @@ router.get('/', validateQuery(ListTransfersQuery), authMiddleware, asyncHandler(
       )
     `)
     .order('created_at', { ascending: false })
-    .range(parseInt(offset as string), parseInt(offset as string) + parseInt(limit as string) - 1) as any);
+    .range(parseInt(offset as string), parseInt(offset as string) + parseInt(limit as string) - 1);
 
   if (driverId) {
     query = query.eq('driver_id', driverId as string);
@@ -139,11 +139,11 @@ router.get('/pending', authMiddleware, asyncHandler(async (req, res) => {
   // Filtrar pagos que no tienen transferencia
   const paymentsWithoutTransfer = [];
   for (const payment of approvedPayments || []) {
-    const { data: transfer } = await (admin
-      .from('driver_transfers' as any)
+    const { data: transfer } = await admin
+      .from('driver_transfers')
       .select('id')
       .eq('payment_id', payment.id)
-      .maybeSingle() as any);
+      .maybeSingle();
 
     if (!transfer) {
       // Obtener driver_id del envío
@@ -170,8 +170,8 @@ router.get('/pending', authMiddleware, asyncHandler(async (req, res) => {
   }
 
   // Obtener transferencias pendientes
-  const { data: pendingTransfers, error: transfersError } = await (admin
-    .from('driver_transfers' as any)
+  const { data: pendingTransfers, error: transfersError } = await admin
+    .from('driver_transfers')
     .select(`
       *,
       driver:profiles!driver_transfers_driver_id_fkey(id, full_name, email, phone),
@@ -186,7 +186,7 @@ router.get('/pending', authMiddleware, asyncHandler(async (req, res) => {
       )
     `)
     .eq('status', 'pending')
-    .order('created_at', { ascending: true }) as any);
+    .order('created_at', { ascending: true });
 
   if (transfersError) {
     logger.error('Error obteniendo transferencias pendientes', transfersError as Error);
@@ -246,11 +246,11 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
   const driverId = assignment.driver_id;
 
   // Verificar que no existe transferencia para este pago
-  const { data: existing } = await (admin
-    .from('driver_transfers' as any)
+  const { data: existing } = await admin
+    .from('driver_transfers')
     .select('id')
     .eq('payment_id', paymentId)
-    .maybeSingle() as any);
+    .maybeSingle();
 
   if (existing) {
     res.status(StatusCodes.BAD_REQUEST).json({ error: 'Ya existe una transferencia para este pago' });
@@ -258,8 +258,8 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
   }
 
   // Crear transferencia
-  const { data: transfer, error: transferError } = await (admin
-    .from('driver_transfers' as any)
+  const { data: transfer, error: transferError } = await admin
+    .from('driver_transfers')
     .insert({
       driver_id: driverId,
       payment_id: paymentId,
@@ -269,7 +269,7 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
       notes: notes || null,
     })
     .select('*')
-    .single() as any);
+    .single();
 
   if (transferError) {
     logger.error('Error creando transferencia', transferError as Error);
@@ -298,11 +298,11 @@ router.patch('/:id', validateParams(z.object({ id: z.string().uuid() })), valida
   const admin = createAdminClient();
 
   // Verificar que la transferencia existe
-  const { data: transfer } = await (admin
-    .from('driver_transfers' as any)
+  const { data: transfer } = await admin
+    .from('driver_transfers')
     .select('*')
     .eq('id', id)
-    .maybeSingle() as any);
+    .maybeSingle();
 
   if (!transfer) {
     res.status(StatusCodes.NOT_FOUND).json({ error: 'Transferencia no encontrada' });
@@ -318,12 +318,12 @@ router.patch('/:id', validateParams(z.object({ id: z.string().uuid() })), valida
     updateData.transferred_at = new Date().toISOString();
   }
 
-  const { data: updated, error: updateError } = await (admin
-    .from('driver_transfers' as any)
+  const { data: updated, error: updateError } = await admin
+    .from('driver_transfers')
     .update(updateData)
     .eq('id', id)
     .select('*')
-    .single() as any);
+    .single();
 
   if (updateError) {
     logger.error('Error actualizando transferencia', updateError as Error);
@@ -379,13 +379,13 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
     .maybeSingle();
 
   // Obtener estadísticas filtradas por driver_id si el usuario es driver
-  let query = admin.from('driver_transfers' as any).select('status, amount');
+  let query = admin.from('driver_transfers').select('status, amount');
   
   if (profile?.role === 'driver') {
     query = query.eq('driver_id', user.sub);
   }
 
-  const { data: transfers, error } = await (query as any);
+  const { data: transfers, error } = await query;
 
   if (error) {
     logger.error('Error obteniendo estadísticas', error as Error);

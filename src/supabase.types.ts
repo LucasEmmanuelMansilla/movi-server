@@ -12,6 +12,63 @@ export type Database = {
   }
   public: {
     Tables: {
+      driver_transfers: {
+        Row: {
+          amount: number
+          created_at: string
+          driver_id: string
+          error_message: string | null
+          id: string
+          mp_transfer_id: string | null
+          notes: string | null
+          payment_id: string
+          status: string
+          transfer_method: string
+          transferred_at: string | null
+        }
+        Insert: {
+          amount: number
+          created_at?: string
+          driver_id: string
+          error_message?: string | null
+          id?: string
+          mp_transfer_id?: string | null
+          notes?: string | null
+          payment_id: string
+          status?: string
+          transfer_method?: string
+          transferred_at?: string | null
+        }
+        Update: {
+          amount?: number
+          created_at?: string
+          driver_id?: string
+          error_message?: string | null
+          id?: string
+          mp_transfer_id?: string | null
+          notes?: string | null
+          payment_id?: string
+          status?: string
+          transfer_method?: string
+          transferred_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "driver_transfers_driver_id_fkey"
+            columns: ["driver_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "driver_transfers_payment_id_fkey"
+            columns: ["payment_id"]
+            isOneToOne: false
+            referencedRelation: "payments"
+            referencedColumns: ["id"]
+          },
+        ]
+      },
       driver_assignments: {
         Row: {
           assigned_at: string
@@ -123,34 +180,94 @@ export type Database = {
       },
       profiles: {
         Row: {
+          address: string | null
+          avatar_url: string | null
+          bank_account_holder_name: string | null
+          bank_account_number: string | null
+          bank_account_type: string | null
+          bank_alias: string | null
+          bank_cbu: string | null
+          bank_cvu: string | null
+          bank_name: string | null
+          business_address: string | null
+          business_name: string | null
           created_at: string
+          email: string | null
           full_name: string | null
           id: string
+          is_available: boolean | null
+          last_location_updated: string | null
+          latitude: number | null
+          license_number: string | null
+          longitude: number | null
+          mp_status: string | null
+          mp_token_expires_at: string | null
+          mp_user_id: string | null
           phone: string | null
           role: string
-          latitude: number | null
-          longitude: number | null
-          last_location_updated: string | null
+          updated_at: string | null
+          vehicle_plate: string | null
+          vehicle_type: string | null
         }
         Insert: {
+          address?: string | null
+          avatar_url?: string | null
+          bank_account_holder_name?: string | null
+          bank_account_number?: string | null
+          bank_account_type?: string | null
+          bank_alias?: string | null
+          bank_cbu?: string | null
+          bank_cvu?: string | null
+          bank_name?: string | null
+          business_address?: string | null
+          business_name?: string | null
           created_at?: string
+          email?: string | null
           full_name?: string | null
           id: string
+          is_available?: boolean | null
+          last_location_updated?: string | null
+          latitude?: number | null
+          license_number?: string | null
+          longitude?: number | null
+          mp_status?: string | null
+          mp_token_expires_at?: string | null
+          mp_user_id?: string | null
           phone?: string | null
           role: string
-          latitude?: number | null
-          longitude?: number | null
-          last_location_updated?: string | null
+          updated_at?: string | null
+          vehicle_plate?: string | null
+          vehicle_type?: string | null
         }
         Update: {
+          address?: string | null
+          avatar_url?: string | null
+          bank_account_holder_name?: string | null
+          bank_account_number?: string | null
+          bank_account_type?: string | null
+          bank_alias?: string | null
+          bank_cbu?: string | null
+          bank_cvu?: string | null
+          bank_name?: string | null
+          business_address?: string | null
+          business_name?: string | null
           created_at?: string
+          email?: string | null
           full_name?: string | null
           id?: string
+          is_available?: boolean | null
+          last_location_updated?: string | null
+          latitude?: number | null
+          license_number?: string | null
+          longitude?: number | null
+          mp_status?: string | null
+          mp_token_expires_at?: string | null
+          mp_user_id?: string | null
           phone?: string | null
           role?: string
-          latitude?: number | null
-          longitude?: number | null
-          last_location_updated?: string | null
+          updated_at?: string | null
+          vehicle_plate?: string | null
+          vehicle_type?: string | null
         }
         Relationships: []
       },

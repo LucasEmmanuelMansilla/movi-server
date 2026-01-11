@@ -690,12 +690,12 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
       // Si hay un pago aprobado, transferir el dinero al driver
       if (payment && payment.driver_amount > 0) {
         // 1. IDEMPOTENCIA: Verificar si ya existe una transferencia COMPLETADA para este pago
-        const { data: existingTransfer } = await (admin
-          .from('driver_transfers' as any)
+        const { data: existingTransfer } = await admin
+          .from('driver_transfers')
           .select('id, status')
           .eq('payment_id', payment.id)
           .eq('status', 'completed')
-          .maybeSingle() as any);
+          .maybeSingle();
 
         if (existingTransfer) {
           logger.info('Transferencia ya completada previamente, omitiendo duplicado', {
@@ -725,14 +725,14 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
             });
             
             // Registrar como pendiente por falta de conexión
-            await (admin.from('driver_transfers' as any).upsert({
+            await admin.from('driver_transfers').upsert({
               driver_id: assign.driver_id,
               payment_id: payment.id,
               amount: payment.driver_amount,
               status: 'pending',
               transfer_method: 'manual',
               notes: 'Driver no tiene Mercado Pago conectado. Requiere acción manual.',
-            }) as any);
+            });
           } else {
             const { transferToUser } = await import('../lib/mercadopago');
             
@@ -747,7 +747,7 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
               });
 
               // Registrar éxito
-              await (admin.from('driver_transfers' as any).upsert({
+              await admin.from('driver_transfers').upsert({
                 driver_id: assign.driver_id,
                 payment_id: payment.id,
                 amount: payment.driver_amount,
@@ -756,23 +756,22 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
                 mp_transfer_id: transferResult.id.toString(),
                 transferred_at: new Date().toISOString(),
                 notes: `Transferencia automática exitosa. MP ID: ${transferResult.id}`,
-              }) as any);
+              });
 
               logger.info('Pago al driver procesado exitosamente', { shipmentId, transferId: transferResult.id });
             } catch (transferError: any) {
               logger.error('Error en transferencia automática MP', transferError);
               
               // Registrar fallo con mensaje de error
-              await (admin.from('driver_transfers' as any).upsert({
+              await admin.from('driver_transfers').upsert({
                 driver_id: assign.driver_id,
                 payment_id: payment.id,
                 amount: payment.driver_amount,
                 status: 'failed',
                 transfer_method: 'mercadopago',
                 notes: `Fallo: ${transferError.message}`,
-                // Usar un campo para el error si existe, sino en notes
                 error_message: transferError.message 
-              }) as any);
+              });
             }
           }
         }
