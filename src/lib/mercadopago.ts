@@ -43,6 +43,8 @@ export interface PaymentSplit {
   totalAmount: number;
 }
 
+const baseUrl = 'https://api.mercadopago.com'
+
 /**
  * Crea una preferencia de pago en Mercado Pago
  */
@@ -54,8 +56,8 @@ export async function createPaymentPreference(params: CreatePreferenceParams) {
   try {
     // Validar que back_urls.success esté definido y sea una URL válida
     // MercadoPago requiere que back_urls.success exista cuando se usa auto_return
-    const hasValidSuccessUrl = params.backUrls?.success && 
-                               typeof params.backUrls.success === 'string' && 
+    const hasValidSuccessUrl = (params.backUrls?.success && 
+                               typeof params.backUrls.success === 'string') && 
                                params.backUrls.success.trim().length > 0;
 
     const preferenceData: any = {
@@ -306,9 +308,7 @@ export async function exchangeOAuthCode(
 
   try {
     // URL base según el entorno (sandbox o producción)
-    const baseUrl = isSandbox 
-      ? 'https://api.mercadopago.com' // En sandbox también se usa api.mercadopago.com
-      : 'https://api.mercadopago.com';
+
 
     const response = await fetch(`${baseUrl}/oauth/token`, {
       method: 'POST',
@@ -370,9 +370,6 @@ export async function refreshOAuthToken(
   }
 
   try {
-    const baseUrl = isSandbox 
-      ? 'https://api.mercadopago.com'
-      : 'https://api.mercadopago.com';
 
     const response = await fetch(`${baseUrl}/oauth/token`, {
       method: 'POST',
@@ -434,9 +431,6 @@ export async function getMercadoPagoUser(
   accessToken: string
 ): Promise<MercadoPagoUser> {
   try {
-    const baseUrl = isSandbox 
-      ? 'https://api.mercadopago.com'
-      : 'https://api.mercadopago.com';
 
     const response = await fetch(`${baseUrl}/users/me`, {
       method: 'GET',
@@ -509,7 +503,6 @@ export async function transferToUser(
   }
 
   try {
-    const baseUrl = 'https://api.mercadopago.com';
 
     // 1. Obtener el ID de usuario del marketplace si no lo tenemos
     let marketplaceUserId = '';

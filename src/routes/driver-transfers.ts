@@ -380,7 +380,7 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
 
   // Obtener estadísticas filtradas por driver_id si el usuario es driver
   let query = admin.from('driver_transfers').select('status, amount');
-  
+
   if (profile?.role === 'driver') {
     query = query.eq('driver_id', user.sub);
   }
@@ -397,7 +397,7 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
   const pending = transfers?.filter((t: any) => t.status === 'pending').length || 0;
   const completed = transfers?.filter((t: any) => t.status === 'completed').length || 0;
   const failed = transfers?.filter((t: any) => t.status === 'failed').length || 0;
-  
+
   const totalAmount = transfers?.reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
   const pendingAmount = transfers?.filter((t: any) => t.status === 'pending').reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
   const completedAmount = transfers?.filter((t: any) => t.status === 'completed').reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
@@ -411,6 +411,110 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
     pendingAmount: Math.round(pendingAmount * 100) / 100,
     completedAmount: Math.round(completedAmount * 100) / 100,
   });
+}));
+
+/**
+ * POST /driver-transfers/withdraw
+ * Inicia el retiro de fondos acumulados para el conductor autenticado
+ */
+router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
+  const user = req.user as { sub: string; role?: Role } | undefined;
+  if (!user?.sub) {
+    res.status(StatusCodes.UNAUTHORIZED).json({ error: 'No autorizado' });
+    return;
+  }
+
+  const admin = createAdminClient();
+
+  // 1. Verificar perfil y conexión con Mercado Pago
+  const { data: profile } = await admin
+    .from('profiles')
+    .select('id, role, mp_user_id, mp_status, full_name')
+    .eq('id', user.sub)
+    .single();
+
+  if (!profile || profile.role !== 'driver') {
+    res.status(StatusCodes.FORBIDDEN).json({ error: 'Solo conductores pueden retirar fondos' });
+    return;
+  }
+
+  if (!profile.mp_user_id || profile.mp_status !== 'connected') {
+    res.status(StatusCodes.BAD_REQUEST).json({ error: 'Debes conectar tu cuenta de Mercado Pago para retirar fondos' });
+    return;
+  }
+
+  // 2. Calcular saldo disponible (Pagos aprobados vinculados al driver - Transferencias completadas)
+  const { data: payments } = await admin
+    .from('payments')
+    .select('driver_amount')
+    .eq('driver_id', user.sub)
+    .eq('status', 'approved');
+
+  const { data: transfers } = await admin
+    .from('driver_transfers')
+    .select('amount')
+    .eq('driver_id', user.sub)
+    .eq('status', 'completed');
+
+  const totalEarned = payments?.reduce((sum, p) => sum + (p.driver_amount || 0), 0) || 0;
+  const totalWithdrawn = transfers?.reduce((sum, t) => sum + (t.amount || 0), 0) || 0;
+  const availableBalance = Math.round((totalEarned - totalWithdrawn) * 100) / 100;
+
+  if (availableBalance <= 0) {
+    res.status(StatusCodes.BAD_REQUEST).json({ error: 'No tienes saldo disponible para retirar' });
+    return;
+  }
+
+  // 3. Ejecutar transferencia vía Mercado Pago
+  const { transferToUser } = await import('../lib/mercadopago');
+
+  try {
+    const idempotencyKey = `withdraw-${user.sub}-${new Date().getTime()}`;
+    const transferResult = await transferToUser({
+      amount: availableBalance,
+      driverUserId: parseInt(profile.mp_user_id),
+      description: `Retiro de fondos Movi - ${profile.full_name}`,
+      externalReference: `withdraw-${user.sub}`,
+      idempotencyKey
+    });
+
+    // 4. Registrar la transferencia en nuestra BD
+    const { data: transferRecord, error: dbError } = await admin
+      .from('driver_transfers')
+      .insert({
+        driver_id: user.sub,
+        payment_id: null, // No vinculado a un único pago, es un retiro global
+        amount: availableBalance,
+        status: 'completed',
+        transfer_method: 'mercadopago',
+        mp_transfer_id: transferResult.id.toString(),
+        transferred_at: new Date().toISOString(),
+        notes: `Retiro manual exitoso. MP ID: ${transferResult.id}`,
+      } as any) // Cast a any porque payment_id es requerido en el tipo pero permitimos null en la app para retiros globales
+      .select('*')
+      .single();
+
+    if (dbError) {
+      logger.error('Error registrando retiro en BD', dbError as Error);
+      // Notificamos éxito igual porque la transferencia en MP ocurrió
+    }
+
+    logger.info('Retiro exitoso procesado', { driverId: user.sub, amount: availableBalance });
+
+    res.json({
+      success: true,
+      amount: availableBalance,
+      transferId: transferResult.id,
+      message: `Retiro de $${availableBalance} procesado exitosamente`
+    });
+
+  } catch (error: any) {
+    logger.error('Error en proceso de retiro manual', error);
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'Error al procesar el retiro en Mercado Pago',
+      message: error.message
+    });
+  }
 }));
 
 export const driverTransfersRouter = router;

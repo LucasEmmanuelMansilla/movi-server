@@ -66,8 +66,8 @@ router.post('/', validateBody(CreateShipmentBody), asyncHandler(async (req, res)
     .maybeSingle();
 
   if (!profile || profile.role !== 'business') {
-    res.status(StatusCodes.FORBIDDEN).json({ 
-      error: 'Only business can create shipments' 
+    res.status(StatusCodes.FORBIDDEN).json({
+      error: 'Only business can create shipments'
     });
     return;
   }
@@ -126,7 +126,7 @@ router.post('/', validateBody(CreateShipmentBody), asyncHandler(async (req, res)
   let calculatedPrice: number | null = null;
   if (pickupLat && pickupLng && dropoffLat && dropoffLng) {
     const distance = calculateDistance(pickupLat, pickupLng, dropoffLat, dropoffLng);
-    
+
     // Fórmula de cálculo: precio base + (distancia_km * precio_por_km) + (peso_kg * factor_peso)
     const PRICE_PER_KM = 500; // $500 por kilómetro
     const PRICE_PER_KG = 200; // $200 por kilogramo
@@ -143,7 +143,7 @@ router.post('/', validateBody(CreateShipmentBody), asyncHandler(async (req, res)
 
   // Crear envío en estado "draft" (borrador) - no se publica hasta que se pague
   // Guardar dirección con coordenadas si están disponibles para evitar geocodificación posterior
-  const finalPickupAddress = pickupLat && pickupLng 
+  const finalPickupAddress = pickupLat && pickupLng
     ? JSON.stringify({ address: pickupAddress, lat: pickupLat, lng: pickupLng })
     : body.pickup_address;
 
@@ -168,17 +168,17 @@ router.post('/', validateBody(CreateShipmentBody), asyncHandler(async (req, res)
 
   if (error) {
     logger.error('Error al crear envío', error as Error, { userId: user.sub });
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
-      error: 'No se pudo crear el envío' 
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'No se pudo crear el envío'
     });
     return;
   }
 
   // NO notificar a drivers todavía - el envío está en draft y requiere pago primero
-  logger.info('Envío creado en estado draft (requiere pago)', { 
-    shipmentId: data.id, 
+  logger.info('Envío creado en estado draft (requiere pago)', {
+    shipmentId: data.id,
     userId: user.sub,
-    calculatedPrice 
+    calculatedPrice
   });
   res.status(StatusCodes.CREATED).json(data);
 }));
@@ -208,16 +208,16 @@ async function notifyAllAvailableDrivers(
       .in('user_id', driverIds);
 
     const pushTokens = (tokens ?? []).map((t) => t.token);
-    
+
     if (pushTokens.length > 0) {
       await sendPush(
         pushTokens,
         'Nuevo envío disponible',
         `${title} - Recoger en: ${address}`
       );
-      logger.info('Notificaciones enviadas a todos los drivers', { 
-        shipmentId, 
-        driversCount: drivers.length 
+      logger.info('Notificaciones enviadas a todos los drivers', {
+        shipmentId,
+        driversCount: drivers.length
       });
     }
   } catch (error) {
@@ -258,7 +258,7 @@ router.get('/', validateQuery(ListShipmentsQuery), asyncHandler(async (req, res)
         .select('*')
         .eq('current_status', 'created')
         .order('created_at', { ascending: false });
-      
+
       if (error) throw error;
       res.json(data);
       return;
@@ -271,7 +271,7 @@ router.get('/', validateQuery(ListShipmentsQuery), asyncHandler(async (req, res)
           .select('*, driver_assignments(driver_id)')
           .eq('created_by', user.sub)
           .order('created_at', { ascending: false });
-        
+
         if (error) throw error;
         res.json(data);
         return;
@@ -280,7 +280,7 @@ router.get('/', validateQuery(ListShipmentsQuery), asyncHandler(async (req, res)
           .from('driver_assignments')
           .select('shipment_id')
           .eq('driver_id', user.sub);
-        
+
         if (aErr) throw aErr;
 
         const ids = (assignments ?? []).map((a) => a.shipment_id);
@@ -306,13 +306,13 @@ router.get('/', validateQuery(ListShipmentsQuery), asyncHandler(async (req, res)
       .from('shipments')
       .select('*')
       .order('created_at', { ascending: false });
-    
+
     if (error) throw error;
     res.json(data);
   } catch (error) {
     logger.error('Error al listar envíos', error as Error, { userId: user.sub, scope });
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
-      error: 'No se pudieron listar los envíos' 
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'No se pudieron listar los envíos'
     });
   }
 }));
@@ -351,13 +351,39 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
 
   const { data: profile } = await admin
     .from('profiles')
-    .select('role')
+    .select('role, full_name, phone, license_number, vehicle_type, vehicle_plate, mp_status')
     .eq('id', user.sub)
     .maybeSingle();
-  
+
   if (!profile || profile.role !== 'driver') {
-    res.status(StatusCodes.FORBIDDEN).json({ 
-      error: 'Only drivers can accept shipments' 
+    res.status(StatusCodes.FORBIDDEN).json({
+      error: 'Only drivers can accept shipments'
+    });
+    return;
+  }
+
+  // 🛡️ VERIFICACIÓN DE PERFIL COMPLETO
+  const isProfileComplete =
+    profile.full_name &&
+    profile.phone &&
+    profile.license_number &&
+    profile.vehicle_type &&
+    profile.vehicle_plate &&
+    profile.mp_status === 'connected';
+
+  if (!isProfileComplete) {
+    res.status(StatusCodes.FORBIDDEN).json({
+      error: 'Debes completar tu perfil y conectar Mercado Pago para aceptar envíos.',
+      details: {
+        missing_fields: [
+          !profile.full_name && 'Nombre completo',
+          !profile.phone && 'Teléfono',
+          !profile.license_number && 'Número de licencia',
+          !profile.vehicle_type && 'Tipo de vehículo',
+          !profile.vehicle_plate && 'Patente del vehículo',
+          profile.mp_status !== 'connected' && 'Cuenta de Mercado Pago conectada'
+        ].filter(Boolean)
+      }
     });
     return;
   }
@@ -372,11 +398,11 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
     res.status(StatusCodes.NOT_FOUND).json({ error: 'Shipment not found' });
     return;
   }
-  
+
   // Solo se pueden aceptar envíos en estado "created" (publicados)
   if (shipment.current_status !== 'created') {
-    res.status(StatusCodes.BAD_REQUEST).json({ 
-      error: 'Shipment not available' 
+    res.status(StatusCodes.BAD_REQUEST).json({
+      error: 'Shipment not available'
     });
     return;
   }
@@ -391,8 +417,8 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
       .maybeSingle();
 
     if (!payment) {
-      res.status(StatusCodes.BAD_REQUEST).json({ 
-        error: 'El pago debe estar aprobado antes de aceptar el envío' 
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: 'El pago debe estar aprobado antes de aceptar el envío'
       });
       return;
     }
@@ -403,10 +429,10 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
     .select('id')
     .eq('shipment_id', shipmentId)
     .maybeSingle();
-  
+
   if (exists) {
-    res.status(StatusCodes.BAD_REQUEST).json({ 
-      error: 'Shipment already assigned' 
+    res.status(StatusCodes.BAD_REQUEST).json({
+      error: 'Shipment already assigned'
     });
     return;
   }
@@ -414,11 +440,11 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
   const { error: aErr } = await admin
     .from('driver_assignments')
     .insert({ shipment_id: shipmentId, driver_id: user.sub });
-  
+
   if (aErr) {
     logger.error('Error al asignar conductor', aErr as Error, { shipmentId, driverId: user.sub });
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
-      error: 'No se pudo asignar el conductor' 
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'No se pudo asignar el conductor'
     });
     return;
   }
@@ -427,10 +453,10 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
     .from('shipments')
     .update({ current_status: 'assigned' })
     .eq('id', shipmentId);
-  
+
   if (upErr) {
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
-      error: 'Failed to update shipment status' 
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'Failed to update shipment status'
     });
     return;
   }
@@ -442,7 +468,7 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
       .from('payments')
       .update({ driver_id: user.sub })
       .eq('shipment_id', shipmentId);
-    
+
     if (pErr) {
       logger.warn('No se pudo actualizar el driver_id en el pago', { error: pErr, shipmentId, driverId: user.sub });
     } else {
@@ -452,11 +478,11 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
     logger.warn('Error al intentar vincular el pago al conductor', { error: err, shipmentId });
   }
 
-  await admin.from('shipment_statuses').insert({ 
-    shipment_id: shipmentId, 
-    status: 'assigned', 
-    note: 'Driver assigned', 
-    created_by: user.sub 
+  await admin.from('shipment_statuses').insert({
+    shipment_id: shipmentId,
+    status: 'assigned',
+    note: 'Driver assigned',
+    created_by: user.sub
   });
 
   // Notificar a todos los drivers que el envío ya no está disponible
@@ -509,13 +535,13 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
       .from('push_tokens')
       .select('token')
       .eq('user_id', shipment.created_by);
-    
+
     const ownerPushTokens = (ownerTokens ?? []).map((t) => t.token);
     if (ownerPushTokens.length > 0) {
       const driverName = driverProfile?.full_name || 'Un chofer';
       await sendPush(
-        ownerPushTokens, 
-        'Envío aceptado', 
+        ownerPushTokens,
+        'Envío aceptado',
         `${driverName} aceptó tu envío: ${shipmentInfo?.title || 'Sin título'}`
       );
     }
@@ -530,7 +556,7 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
       .from('push_tokens')
       .select('token')
       .eq('user_id', user.sub);
-    
+
     const driverPushTokens = (driverTokens ?? []).map((t) => t.token);
     if (driverPushTokens.length > 0) {
       await sendPush(
@@ -554,8 +580,8 @@ const UpdateStatusParams = z.object({
   id: z.string().uuid('ID de envío inválido'),
 });
 
-const UpdateStatusBody = z.object({ 
-  status: z.enum(['picked_up', 'in_transit', 'delivered', 'cancelled']), 
+const UpdateStatusBody = z.object({
+  status: z.enum(['picked_up', 'in_transit', 'delivered', 'cancelled']),
   note: z.string().max(500).optional(),
   location: z.object({
     coords: z.object({
@@ -590,18 +616,18 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
     .select('id, created_by, current_status, pickup_address, dropoff_address')
     .eq('id', shipmentId)
     .maybeSingle();
-  
+
   if (shipError) {
     logger.error('Error al obtener envío', shipError as Error, { shipmentId });
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
-      error: 'No se pudo obtener el envío' 
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'No se pudo obtener el envío'
     });
     return;
   }
 
   if (!shipment) {
-    res.status(StatusCodes.NOT_FOUND).json({ 
-      error: 'Shipment not found' 
+    res.status(StatusCodes.NOT_FOUND).json({
+      error: 'Shipment not found'
     });
     return;
   }
@@ -615,18 +641,18 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
 
   if (assignError) {
     logger.error('Error al verificar asignación', assignError as Error, { shipmentId });
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
-      error: 'No se pudieron verificar los permisos' 
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'No se pudieron verificar los permisos'
     });
     return;
   }
 
   const isOwner = shipment.created_by === user.sub;
   const isDriver = assign?.driver_id === user.sub;
-  
+
   if (!isOwner && !isDriver) {
-    res.status(StatusCodes.FORBIDDEN).json({ 
-      error: 'Not allowed to update status' 
+    res.status(StatusCodes.FORBIDDEN).json({
+      error: 'Not allowed to update status'
     });
     return;
   }
@@ -634,8 +660,8 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
   // Validar ubicación para drivers cuando cambian estados específicos
   if (isDriver && (status === 'picked_up' || status === 'delivered')) {
     if (!location?.coords) {
-      res.status(StatusCodes.BAD_REQUEST).json({ 
-        error: 'Se requiere la ubicación actual para cambiar este estado' 
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: 'Se requiere la ubicación actual para cambiar este estado'
       });
       return;
     }
@@ -653,8 +679,8 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
       } else {
         const distance = calculateDistance(driverLat, driverLng, pickupCoords.lat, pickupCoords.lng);
         if (distance > MAX_DISTANCE_KM) {
-          res.status(StatusCodes.BAD_REQUEST).json({ 
-            error: `Debes estar en el radio de 100 metros del punto de retiro para marcar como recogido. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.` 
+          res.status(StatusCodes.BAD_REQUEST).json({
+            error: `Debes estar en el radio de 100 metros del punto de retiro para marcar como recogido. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.`
           });
           return;
         }
@@ -668,8 +694,8 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
       } else {
         const distance = calculateDistance(driverLat, driverLng, dropoffCoords.lat, dropoffCoords.lng);
         if (distance > MAX_DISTANCE_KM) {
-          res.status(StatusCodes.BAD_REQUEST).json({ 
-            error: `Debes estar en el radio de 100 metros del punto de entrega para marcar como entregado. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.` 
+          res.status(StatusCodes.BAD_REQUEST).json({
+            error: `Debes estar en el radio de 100 metros del punto de entrega para marcar como entregado. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.`
           });
           return;
         }
@@ -677,107 +703,32 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
     }
   }
 
-  // Si el estado es 'delivered', procesar la transferencia de pago al driver
+  // Si el estado es 'delivered', antes se procesaba la transferencia automática.
+  // AHORA: Se elimina la transferencia automática para permitir retiro manual por el driver.
   if (status === 'delivered' && assign?.driver_id) {
+    logger.info('Envío entregado. El conductor ahora puede retirar su pago manualmente.', {
+      shipmentId,
+      driverId: assign.driver_id
+    });
+
+    // Asegurarse de que el pago tenga el driver_id vinculado
     try {
       const { data: payment } = await admin
         .from('payments')
-        .select('id, status, driver_amount, shipment_id, driver_id')
+        .select('id, driver_id')
         .eq('shipment_id', shipmentId)
         .eq('status', 'approved')
         .maybeSingle();
 
-      // Si hay un pago aprobado, transferir el dinero al driver
-      if (payment && payment.driver_amount > 0) {
-        // 1. IDEMPOTENCIA: Verificar si ya existe una transferencia COMPLETADA para este pago
-        const { data: existingTransfer } = await admin
-          .from('driver_transfers')
-          .select('id, status')
-          .eq('payment_id', payment.id)
-          .eq('status', 'completed')
-          .maybeSingle();
-
-        if (existingTransfer) {
-          logger.info('Transferencia ya completada previamente, omitiendo duplicado', {
-            paymentId: payment.id,
-            transferId: existingTransfer.id
-          });
-        } else {
-          // Asegurarse de que el pago tenga el driver_id vinculado
-          if (!payment.driver_id) {
-            await admin
-              .from('payments')
-              .update({ driver_id: assign.driver_id })
-              .eq('id', payment.id);
-          }
-
-          // Obtener información del driver
-          const { data: driverProfile } = await admin
-            .from('profiles')
-            .select('id, mp_user_id, mp_status')
-            .eq('id', assign.driver_id)
-            .maybeSingle();
-
-          if (!driverProfile || !driverProfile.mp_user_id || driverProfile.mp_status !== 'connected') {
-            logger.warn('Driver no apto para transferencia automática', {
-              driverId: assign.driver_id,
-              mpStatus: driverProfile?.mp_status
-            });
-            
-            // Registrar como pendiente por falta de conexión
-            await admin.from('driver_transfers').upsert({
-              driver_id: assign.driver_id,
-              payment_id: payment.id,
-              amount: payment.driver_amount,
-              status: 'pending',
-              transfer_method: 'manual',
-              notes: 'Driver no tiene Mercado Pago conectado. Requiere acción manual.',
-            });
-          } else {
-            const { transferToUser } = await import('../lib/mercadopago');
-            
-            try {
-              // EJECUTAR TRANSFERENCIA CON IDEMPOTENCIA
-              const transferResult = await transferToUser({
-                amount: payment.driver_amount,
-                driverUserId: parseInt(driverProfile.mp_user_id),
-                description: `Pago automático envío ${shipmentId}`,
-                externalReference: payment.id,
-                idempotencyKey: `payout-${payment.id}` // Clave de idempotencia única por pago
-              });
-
-              // Registrar éxito
-              await admin.from('driver_transfers').upsert({
-                driver_id: assign.driver_id,
-                payment_id: payment.id,
-                amount: payment.driver_amount,
-                status: 'completed',
-                transfer_method: 'mercadopago',
-                mp_transfer_id: transferResult.id.toString(),
-                transferred_at: new Date().toISOString(),
-                notes: `Transferencia automática exitosa. MP ID: ${transferResult.id}`,
-              });
-
-              logger.info('Pago al driver procesado exitosamente', { shipmentId, transferId: transferResult.id });
-            } catch (transferError: any) {
-              logger.error('Error en transferencia automática MP', transferError);
-              
-              // Registrar fallo con mensaje de error
-              await admin.from('driver_transfers').upsert({
-                driver_id: assign.driver_id,
-                payment_id: payment.id,
-                amount: payment.driver_amount,
-                status: 'failed',
-                transfer_method: 'mercadopago',
-                notes: `Fallo: ${transferError.message}`,
-                error_message: transferError.message 
-              });
-            }
-          }
-        }
+      if (payment && !payment.driver_id) {
+        await admin
+          .from('payments')
+          .update({ driver_id: assign.driver_id })
+          .eq('id', payment.id);
+        logger.info('Pago vinculado al conductor correctamente', { shipmentId, paymentId: payment.id });
       }
-    } catch (paymentError) {
-      logger.error('Error crítico en flujo de pago al driver', paymentError as Error);
+    } catch (err) {
+      logger.error('Error vinculando driver al pago en entrega', err as Error);
     }
   }
 
@@ -786,11 +737,11 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
     .from('shipments')
     .update({ current_status: status })
     .eq('id', shipmentId);
-  
+
   if (updateError) {
     logger.error('Error al actualizar estado', updateError as Error, { shipmentId, status });
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
-      error: 'No se pudo actualizar el estado' 
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'No se pudo actualizar el estado'
     });
     return;
   }
@@ -798,11 +749,11 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
   // Registrar el cambio de estado
   const { error: statusError } = await admin
     .from('shipment_statuses')
-    .insert({ 
-      shipment_id: shipmentId, 
-      status, 
-      note: note || null, 
-      created_by: user.sub 
+    .insert({
+      shipment_id: shipmentId,
+      status,
+      note: note || null,
+      created_by: user.sub
     });
 
   if (statusError) {
@@ -823,7 +774,7 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
   try {
     // Determinar a quién notificar basado en quién hizo el cambio
     let userIdToNotify: string | null = null;
-    
+
     if (isDriver) {
       // Si el driver actualiza el estado, solo notificar al business owner
       userIdToNotify = shipment.created_by;
@@ -839,15 +790,15 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
         .from('push_tokens')
         .select('token')
         .eq('user_id', userIdToNotify);
-      
+
       if (!tokens || tokens.length === 0) {
-        logger.info('No hay tokens de push disponibles para notificar', { 
-          shipmentId, 
-          userId: userIdToNotify 
+        logger.info('No hay tokens de push disponibles para notificar', {
+          shipmentId,
+          userId: userIdToNotify
         });
       } else {
         const pushTokens = tokens.map(t => t.token);
-        
+
         // Crear mensajes personalizados según el estado
         let title = 'Actualización de envío';
         let body = '';
@@ -874,9 +825,9 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
         }
 
         await sendPush(pushTokens, title, body);
-        
-        logger.info('Notificación de actualización de estado enviada', { 
-          shipmentId, 
+
+        logger.info('Notificación de actualización de estado enviada', {
+          shipmentId,
           status,
           updatedBy: isDriver ? 'driver' : 'owner',
           notifiedUserId: userIdToNotify,
@@ -913,11 +864,11 @@ router.get('/:id/statuses', validateParams(GetStatusesParams), asyncHandler(asyn
     `)
     .eq('shipment_id', shipmentId)
     .order('created_at', { ascending: true });
-  
+
   if (error) {
     logger.error('Error al obtener historial de estados', error as Error, { shipmentId });
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
-      error: 'No se pudo obtener el historial' 
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'No se pudo obtener el historial'
     });
     return;
   }
