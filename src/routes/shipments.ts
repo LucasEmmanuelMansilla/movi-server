@@ -657,8 +657,24 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
     return;
   }
 
-  // Validar ubicación para drivers cuando cambian estados específicos
-  if (isDriver && (status === 'picked_up' || status === 'delivered')) {
+  // 🛡️ Solo el dueño (Business) puede confirmar la entrega
+  if (status === 'delivered' && !isOwner) {
+    res.status(StatusCodes.FORBIDDEN).json({
+      error: 'Solo el autor del envío puede confirmar la entrega.'
+    });
+    return;
+  }
+
+  // 🛡️ El conductor NO puede marcar como entregado
+  if (isDriver && status === 'delivered') {
+    res.status(StatusCodes.FORBIDDEN).json({
+      error: 'No tienes permiso para marcar este envío como entregado. El cliente debe confirmar la recepción.'
+    });
+    return;
+  }
+
+  // Validar ubicación para drivers cuando cambian a 'picked_up'
+  if (isDriver && status === 'picked_up') {
     if (!location?.coords) {
       res.status(StatusCodes.BAD_REQUEST).json({
         error: 'Se requiere la ubicación actual para cambiar este estado'
@@ -681,21 +697,6 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
         if (distance > MAX_DISTANCE_KM) {
           res.status(StatusCodes.BAD_REQUEST).json({
             error: `Debes estar en el radio de 100 metros del punto de retiro para marcar como recogido. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.`
-          });
-          return;
-        }
-      }
-    } else if (status === 'delivered') {
-      // Validar que el driver esté cerca de la dirección de entrega
-      const dropoffCoords = await geocodeAddress(shipment.dropoff_address);
-      if (!dropoffCoords) {
-        logger.warn('No se pudo geocodificar dirección de entrega para validación', { shipmentId });
-        // Continuar sin validación si no se puede geocodificar
-      } else {
-        const distance = calculateDistance(driverLat, driverLng, dropoffCoords.lat, dropoffCoords.lng);
-        if (distance > MAX_DISTANCE_KM) {
-          res.status(StatusCodes.BAD_REQUEST).json({
-            error: `Debes estar en el radio de 100 metros del punto de entrega para marcar como entregado. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.`
           });
           return;
         }

@@ -140,9 +140,9 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
       .eq('id', user.sub)
       .maybeSingle();
 
-    if (!requesterProfile || (requesterProfile.role !== 'business' && requesterProfile.role !== 'admin')) {
-      res.status(StatusCodes.FORBIDDEN).json({ 
-        error: 'Solo usuarios business o admin pueden realizar transferencias' 
+    if (!requesterProfile || requesterProfile.role !== 'admin') {
+      res.status(StatusCodes.FORBIDDEN).json({
+        error: 'Solo administradores pueden realizar transferencias directas'
       });
       return;
     }
@@ -176,8 +176,8 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
     }
 
     if (driverProfile.role !== 'driver') {
-      res.status(StatusCodes.BAD_REQUEST).json({ 
-        error: 'El usuario destino debe ser un driver' 
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: 'El usuario destino debe ser un driver'
       });
       return;
     }
@@ -186,8 +186,8 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
     const mpStatus = driverProfile.mp_status;
 
     if (!mpUserId || mpStatus !== 'connected') {
-      res.status(StatusCodes.BAD_REQUEST).json({ 
-        error: 'El driver no tiene Mercado Pago conectado. Debe conectar su cuenta primero.' 
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: 'El driver no tiene Mercado Pago conectado. Debe conectar su cuenta primero.'
       });
       return;
     }
@@ -206,8 +206,8 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
       }
 
       if (payment.status !== 'approved') {
-        res.status(StatusCodes.BAD_REQUEST).json({ 
-          error: 'El pago debe estar aprobado para realizar la transferencia' 
+        res.status(StatusCodes.BAD_REQUEST).json({
+          error: 'El pago debe estar aprobado para realizar la transferencia'
         });
         return;
       }
@@ -220,8 +220,8 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
         .maybeSingle();
 
       if (!assignment || assignment.driver_id !== driver_id) {
-        res.status(StatusCodes.BAD_REQUEST).json({ 
-          error: 'El driver no está asignado a este pago' 
+        res.status(StatusCodes.BAD_REQUEST).json({
+          error: 'El driver no está asignado a este pago'
         });
         return;
       }
@@ -230,8 +230,8 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
       if (!amount && payment.driver_amount) {
         // amount ya viene en el body, pero validamos que coincida
         if (Math.abs(amount - payment.driver_amount) > 0.01) {
-          res.status(StatusCodes.BAD_REQUEST).json({ 
-            error: `El monto debe ser ${payment.driver_amount} según el pago` 
+          res.status(StatusCodes.BAD_REQUEST).json({
+            error: `El monto debe ser ${payment.driver_amount} según el pago`
           });
           return;
         }
@@ -239,7 +239,7 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
     }
 
     // Realizar transferencia usando el access_token del driver
-    const transferDescription = description || 
+    const transferDescription = description ||
       (payment_id ? `Pago por servicio - Payment ID: ${payment_id}` : `Transferencia a ${(driverProfile as any).full_name || 'driver'}`);
 
     const transferResult = await transferToUser({
@@ -303,20 +303,20 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
 
     // Manejar errores específicos de Mercado Pago
     if (error.message?.includes('insufficient_funds')) {
-      res.status(StatusCodes.PAYMENT_REQUIRED).json({ 
-        error: 'Fondos insuficientes en la cuenta del marketplace' 
+      res.status(StatusCodes.PAYMENT_REQUIRED).json({
+        error: 'Fondos insuficientes en la cuenta del marketplace'
       });
       return;
     }
 
     if (error.message?.includes('invalid_user')) {
-      res.status(StatusCodes.BAD_REQUEST).json({ 
-        error: 'Usuario de Mercado Pago inválido o no encontrado' 
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: 'Usuario de Mercado Pago inválido o no encontrado'
       });
       return;
     }
 
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
       error: 'Error realizando transferencia',
       message: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
@@ -350,8 +350,8 @@ router.get('/:transferId', validateParams(GetTransferParams), authMiddleware, as
     });
   } catch (error) {
     logger.error('Error obteniendo transferencia', error as Error, { transferId });
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
-      error: 'Error obteniendo transferencia' 
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'Error obteniendo transferencia'
     });
   }
 }));
