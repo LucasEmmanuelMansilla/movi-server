@@ -509,10 +509,15 @@ export async function transferToUser(
     const meRes = await fetch(`${baseUrl}/users/me`, {
       headers: { 'Authorization': `Bearer ${marketplaceAccessToken}` }
     });
-    if (meRes.ok) {
-      const meData = await meRes.json();
-      marketplaceUserId = meData.id.toString();
+    
+    if (!meRes.ok) {
+      const errorText = await meRes.text();
+      logger.error('Error obteniendo marketplaceUserId', new Error(errorText));
+      throw new Error(`No se pudo obtener el ID del marketplace: ${meRes.statusText}`);
     }
+
+    const meData = await meRes.json();
+    marketplaceUserId = meData.id.toString();
 
     // 2. Estructura CORRECTA para Advanced Payments
     // Este body es el que espera Mercado Pago para transferencias entre cuentas
@@ -520,6 +525,8 @@ export async function transferToUser(
       application_id: applicationId,
       external_reference: params.externalReference,
       description: params.description,
+      processing_mode: 'aggregator', // Obligatorio para Marketplace flow
+      binary_mode: true, // Recomendado para account_money
       payer: {
         id: marketplaceUserId, // El marketplace paga con su saldo
         type: 'customer'
