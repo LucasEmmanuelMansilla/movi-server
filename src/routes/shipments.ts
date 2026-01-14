@@ -581,7 +581,7 @@ const UpdateStatusParams = z.object({
 });
 
 const UpdateStatusBody = z.object({
-  status: z.enum(['picked_up', 'in_transit', 'delivered', 'cancelled']),
+  status: z.enum(['picked_up', 'in_transit', 'ready_for_delivery', 'delivered', 'cancelled']),
   note: z.string().max(500).optional(),
   location: z.object({
     coords: z.object({
@@ -684,23 +684,55 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
 
     const driverLat = location.coords.latitude;
     const driverLng = location.coords.longitude;
-    const MAX_DISTANCE_KM = 0.1; // 100 metros
+    const MAX_DISTANCE_KM = 0.5; // Aumentar a 500 metros para evitar falsos negativos por GPS
 
     if (status === 'picked_up') {
       // Validar que el driver esté cerca de la dirección de retiro
-      const pickupCoords = await geocodeAddress(shipment.pickup_address);
+      // ✅ MEJORA: Usar coordenadas si ya están persistidas en el address JSON
+      const parsedPickup = parseAddressWithCoordinates(shipment.pickup_address);
+      let pickupCoords: { lat: number; lng: number } | null = null;
+
+      if (parsedPickup.lat && parsedPickup.lng) {
+        pickupCoords = { lat: parsedPickup.lat, lng: parsedPickup.lng };
+      } else {
+        pickupCoords = await geocodeAddress(parsedPickup.address);
+      }
+
       if (!pickupCoords) {
         logger.warn('No se pudo geocodificar dirección de retiro para validación', { shipmentId });
-        // Continuar sin validación si no se puede geocodificar
+        // Continuar sin validación si no se puede geocodificar para evitar bloquear el flujo
       } else {
         const distance = calculateDistance(driverLat, driverLng, pickupCoords.lat, pickupCoords.lng);
         if (distance > MAX_DISTANCE_KM) {
           res.status(StatusCodes.BAD_REQUEST).json({
-            error: `Debes estar en el radio de 100 metros del punto de retiro para marcar como recogido. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.`
+            error: `Debes estar en el radio de 500 metros del punto de retiro para marcar como recogido. Estás a ${(distance * 1000).toFixed(0)} metros de distancia.`
           });
           return;
         }
       }
+    }
+  }
+
+  // 🛡️ REGLAS DE NEGOCIO PARA DOBLE CHECK (Driver -> Ready -> Business -> Delivered)
+  if (status === 'ready_for_delivery') {
+    if (!isDriver) {
+      res.status(StatusCodes.FORBIDDEN).json({ error: 'Solo el conductor puede notificar la entrega.' });
+      return;
+    }
+    if (shipment.current_status !== 'in_transit') {
+      res.status(StatusCodes.BAD_REQUEST).json({ error: 'El envío debe estar en tránsito para marcar como por entregar.' });
+      return;
+    }
+  }
+
+  if (status === 'delivered') {
+    if (!isOwner) {
+      res.status(StatusCodes.FORBIDDEN).json({ error: 'Solo el cliente puede confirmar la recepción final.' });
+      return;
+    }
+    if (shipment.current_status !== 'ready_for_delivery') {
+      res.status(StatusCodes.BAD_REQUEST).json({ error: 'El conductor debe marcar el pedido como entregado antes de que puedas confirmarlo.' });
+      return;
     }
   }
 
@@ -813,9 +845,13 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
             title = 'Envío en tránsito';
             body = `El envío "${shipmentInfo?.title || 'Sin título'}" está en camino hacia: ${shipmentInfo?.dropoff_address || 'el destino'}`;
             break;
+          case 'ready_for_delivery':
+            title = 'Pedido por confirmar';
+            body = `El conductor indica que ya entregó "${shipmentInfo?.title || 'Sin título'}". Por favor confirma la recepción para finalizar.`;
+            break;
           case 'delivered':
-            title = 'Envío entregado';
-            body = `El envío "${shipmentInfo?.title || 'Sin título'}" ha sido entregado exitosamente en: ${shipmentInfo?.dropoff_address || 'el destino'}`;
+            title = 'Envío finalizado';
+            body = `El cliente ha confirmado la recepción de "${shipmentInfo?.title || 'Sin título'}". ¡Buen trabajo!`;
             break;
           case 'cancelled':
             title = 'Envío cancelado';
@@ -825,20 +861,21 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
             body = `Nuevo estado: ${status}`;
         }
 
-        await sendPush(pushTokens, title, body);
+        // ✅ MEJORA: No esperar a que se envíe el push para responder al cliente (evita timeouts)
+        sendPush(pushTokens, title, body).catch(e => {
+          logger.error('Error enviando push en background', e as Error, { shipmentId });
+        });
 
-        logger.info('Notificación de actualización de estado enviada', {
+        logger.info('Notificación de actualización de estado encolada', {
           shipmentId,
           status,
           updatedBy: isDriver ? 'driver' : 'owner',
-          notifiedUserId: userIdToNotify,
-          tokensCount: pushTokens.length
+          notifiedUserId: userIdToNotify
         });
       }
     }
   } catch (pushError) {
-    logger.error('Error al enviar notificaciones push', pushError as Error, { shipmentId });
-    // No fallamos por errores de notificaciones push
+    logger.error('Error al preparar notificaciones push', pushError as Error, { shipmentId });
   }
 
   logger.info('Estado de envío actualizado', { shipmentId, status, userId: user.sub });
