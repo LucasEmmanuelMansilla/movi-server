@@ -446,7 +446,7 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
     pendingAmount: Math.round(pendingAmount * 100) / 100,
     completedAmount: Math.round(completedAmount * 100) / 100,
   });
-});
+}));
 
 /**
  * POST /driver-transfers/withdraw
