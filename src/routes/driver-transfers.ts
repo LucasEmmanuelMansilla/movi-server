@@ -393,13 +393,48 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
     return;
   }
 
+  // Si es un driver, calcular el saldo real disponible (Pagos - Transferencias)
+  let availableBalance = 0;
+  if (profile?.role === 'driver') {
+    try {
+      // 1. Calcular total ganado (Pagos aprobados vinculados al driver de envíos ENTREGADOS)
+      const { data: payments } = await admin
+        .from('payments')
+        .select(`
+          driver_amount,
+          shipment:shipments!payments_shipment_id_fkey(current_status)
+        `)
+        .eq('driver_id', user.sub)
+        .eq('status', 'approved');
+
+      // Solo contar pagos de envíos que ya fueron entregados
+      const totalEarned = payments
+        ?.filter(p => (p.shipment as any)?.current_status === 'delivered')
+        .reduce((sum, p) => sum + (p.driver_amount || 0), 0) || 0;
+
+      // 2. Calcular total retirado (Transferencias completadas)
+      const totalWithdrawn = transfers?.filter((t: any) => t.status === 'completed')
+        .reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
+
+      // El saldo "pendiente" para el driver es lo que ha ganado menos lo que ya retiró exitosamente
+      availableBalance = Math.round((totalEarned - totalWithdrawn) * 100) / 100;
+    } catch (err) {
+      logger.error('Error calculando balance disponible en stats', err as Error);
+    }
+  }
+
   const total = transfers?.length || 0;
   const pending = transfers?.filter((t: any) => t.status === 'pending').length || 0;
   const completed = transfers?.filter((t: any) => t.status === 'completed').length || 0;
   const failed = transfers?.filter((t: any) => t.status === 'failed').length || 0;
 
   const totalAmount = transfers?.reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
-  const pendingAmount = transfers?.filter((t: any) => t.status === 'pending').reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
+  
+  // Para el driver, pendingAmount es el saldo que puede retirar
+  const pendingAmount = profile?.role === 'driver' 
+    ? availableBalance 
+    : transfers?.filter((t: any) => t.status === 'pending').reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
+    
   const completedAmount = transfers?.filter((t: any) => t.status === 'completed').reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
 
   res.json({
@@ -411,7 +446,7 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
     pendingAmount: Math.round(pendingAmount * 100) / 100,
     completedAmount: Math.round(completedAmount * 100) / 100,
   });
-}));
+});
 
 /**
  * POST /driver-transfers/withdraw
@@ -443,10 +478,13 @@ router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
     return;
   }
 
-  // 2. Calcular saldo disponible (Pagos aprobados vinculados al driver - Transferencias completadas)
+  // 2. Calcular saldo disponible (Pagos aprobados de envíos entregados - Transferencias completadas)
   const { data: payments } = await admin
     .from('payments')
-    .select('driver_amount')
+    .select(`
+      driver_amount,
+      shipment:shipments!payments_shipment_id_fkey(current_status)
+    `)
     .eq('driver_id', user.sub)
     .eq('status', 'approved');
 
@@ -456,7 +494,9 @@ router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
     .eq('driver_id', user.sub)
     .eq('status', 'completed');
 
-  const totalEarned = payments?.reduce((sum, p) => sum + (p.driver_amount || 0), 0) || 0;
+  const totalEarned = payments
+    ?.filter(p => (p.shipment as any)?.current_status === 'delivered')
+    .reduce((sum, p) => sum + (p.driver_amount || 0), 0) || 0;
   const totalWithdrawn = transfers?.reduce((sum, t) => sum + (t.amount || 0), 0) || 0;
   const availableBalance = Math.round((totalEarned - totalWithdrawn) * 100) / 100;
 
