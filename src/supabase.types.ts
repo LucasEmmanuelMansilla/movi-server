@@ -200,6 +200,8 @@ export type Database = {
           latitude: number | null
           license_number: string | null
           longitude: number | null
+          mp_access_token: string | null
+          mp_refresh_token: string | null
           mp_status: string | null
           mp_token_expires_at: string | null
           mp_user_id: string | null
@@ -230,6 +232,8 @@ export type Database = {
           latitude?: number | null
           license_number?: string | null
           longitude?: number | null
+          mp_access_token?: string | null
+          mp_refresh_token?: string | null
           mp_status?: string | null
           mp_token_expires_at?: string | null
           mp_user_id?: string | null
@@ -260,6 +264,8 @@ export type Database = {
           latitude?: number | null
           license_number?: string | null
           longitude?: number | null
+          mp_access_token?: string | null
+          mp_refresh_token?: string | null
           mp_status?: string | null
           mp_token_expires_at?: string | null
           mp_user_id?: string | null

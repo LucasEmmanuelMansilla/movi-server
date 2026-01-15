@@ -506,16 +506,16 @@ router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
   }
 
   // 3. Ejecutar transferencia vía Mercado Pago
-  const { transferToUser } = await import('../lib/mercadopago');
+  const { MercadoPagoService } = await import('../services/mercadopago.service');
+  const mpService = MercadoPagoService.getInstance();
 
   try {
     const idempotencyKey = `withdraw-${user.sub}-${new Date().getTime()}`;
-    const transferResult = await transferToUser({
+    const transferResult = await mpService.transferToUser({
       amount: availableBalance,
-      driverUserId: parseInt(profile.mp_user_id),
+      collectorId: profile.mp_user_id,
       description: `Retiro de fondos Movi - ${profile.full_name}`,
       externalReference: `withdraw-${user.sub}`,
-      idempotencyKey
     });
 
     // 4. Registrar la transferencia en nuestra BD
