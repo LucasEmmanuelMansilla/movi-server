@@ -63,7 +63,6 @@ export class MercadoPagoService {
   }
 
   /**
-   * Crea una preferencia de pago con split (marketplace_fee)
    */
   public async createPaymentPreference(params: CreatePreferenceParams) {
     if (!this.preferenceClient) {
@@ -121,7 +120,6 @@ export class MercadoPagoService {
   }
 
   /**
-   * OAuth: Intercambia código por tokens
    */
   public async exchangeOAuthCode(authorizationCode: string): Promise<OAuthTokenResponse> {
     const clientId = env.MP_APPLICATION_ID || env.MP_CLIENT_ID;
@@ -156,7 +154,6 @@ export class MercadoPagoService {
   }
 
   /**
-   * OAuth: Refresca token
    */
   public async refreshOAuthToken(refreshToken: string): Promise<OAuthTokenResponse> {
     const clientId = env.MP_APPLICATION_ID || env.MP_CLIENT_ID;
@@ -189,7 +186,6 @@ export class MercadoPagoService {
   }
 
   /**
-   * Obtiene datos del usuario de MP
    */
   public async getMercadoPagoUser(accessToken: string): Promise<MercadoPagoUser> {
     const response = await fetch(`${this.baseUrl}/users/me`, {
@@ -207,11 +203,6 @@ export class MercadoPagoService {
     return await response.json() as MercadoPagoUser;
   }
 
-  /**
-   * Transferencia manual (usada si el split automático no es posible o para pagos directos)
-   * Nota: En el flujo de marketplace con split (marketplace_fee), MP reparte el dinero 
-   * automáticamente si el vendedor tiene su cuenta vinculada.
-   */
   public async transferToUser(params: {
     collectorId: string;
     amount: number;
@@ -222,7 +213,6 @@ export class MercadoPagoService {
 
     const applicationId = env.MP_APPLICATION_ID || env.MP_CLIENT_ID;
     
-    // Para transferencias entre cuentas de MP se usa Advanced Payments
     const body = {
       application_id: applicationId,
       external_reference: params.externalReference,
@@ -231,7 +221,6 @@ export class MercadoPagoService {
       binary_mode: true,
       payer: {
         type: 'customer',
-        // El ID del marketplace se obtiene del token o se asume que es el dueño de la app
       },
       payments: [
         {
