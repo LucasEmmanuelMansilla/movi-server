@@ -24,7 +24,6 @@ dotenv.config();
 const app = express();
 const port = Number(env.PORT);
 
-// Configuración de CORS
 const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || ['*'];
 app.use(cors({
   origin: (origin, callback) => {
@@ -39,9 +38,8 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Security middleware
 app.use(helmet({
-  contentSecurityPolicy: false, // Desactivar para APIs
+  contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false,
 }));
 
