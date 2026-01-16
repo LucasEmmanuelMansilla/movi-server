@@ -116,11 +116,17 @@ router.post('/create', validateBody(CreatePaymentBody), authMiddleware, asyncHan
     return;
   }
 
+  const price = typeof shipment.price === 'number' ? shipment.price : null;
+  if (price === null) {
+    res.status(StatusCodes.BAD_REQUEST).json({ error: 'El envío no tiene precio definido' });
+    return;
+  }
+
   try {
     const preference = await mpService.createPaymentPreference({
       shipmentId,
       title: shipment.title,
-      amount: shipment.price,
+      amount: price,
       payerEmail,
       payerName,
       backUrls: {
@@ -131,7 +137,7 @@ router.post('/create', validateBody(CreatePaymentBody), authMiddleware, asyncHan
     });
 
     const commissionPercentage = parseFloat(env.COMMISSION_PERCENTAGE || '10');
-    const commission = (shipment.price * commissionPercentage) / 100;
+    const commission = (price * commissionPercentage) / 100;
 
     const { data: paymentRecord, error: paymentError } = await admin
       .from('payments')
@@ -139,9 +145,9 @@ router.post('/create', validateBody(CreatePaymentBody), authMiddleware, asyncHan
         shipment_id: shipmentId,
         payer_id: user.sub,
         status: 'pending',
-        amount: shipment.price,
+        amount: price,
         commission_amount: commission,
-        driver_amount: shipment.price - commission,
+        driver_amount: price - commission,
         preference_id: preference.preferenceId,
         payment_data: { sandbox_init_point: preference.sandboxInitPoint } as any,
       })
