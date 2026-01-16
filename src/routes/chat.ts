@@ -6,7 +6,6 @@ import { sendPush } from './push';
 
 const router = Router();
 
-// Enviar un mensaje y notificar al destinatario
 router.post('/send', asyncHandler(async (req, res) => {
   const user = req.user as { sub: string } | undefined;
   if (!user?.sub) {
@@ -27,7 +26,6 @@ router.post('/send', asyncHandler(async (req, res) => {
 
   const admin = createAdminClient();
 
-  // 1. Guardar el mensaje en la base de datos
   const { data: message, error: messageError } = await admin
     .from('messages')
     .insert({
@@ -45,7 +43,6 @@ router.post('/send', asyncHandler(async (req, res) => {
     return;
   }
 
-  // 2. Obtener tokens de push del destinatario
   const { data: tokens, error: tokensError } = await admin
     .from('push_tokens')
     .select('token')
@@ -54,7 +51,6 @@ router.post('/send', asyncHandler(async (req, res) => {
   if (tokensError) {
     console.error('[Chat] Error al obtener tokens:', tokensError);
   } else if (tokens && tokens.length > 0) {
-    // 3. Enviar notificación push
     const senderName = (message as any).sender?.full_name || 'Alguien';
     const pushTokens = tokens.map(t => t.token);
     
@@ -73,7 +69,6 @@ router.post('/send', asyncHandler(async (req, res) => {
   res.status(StatusCodes.CREATED).json(message);
 }));
 
-// Marcar mensajes como leídos
 router.post('/read', asyncHandler(async (req, res) => {
   const user = req.user as { sub: string } | undefined;
   if (!user?.sub) {

@@ -11,20 +11,17 @@ import { sendPush } from './push';
 
 const router = Router();
 
-// Schema para crear transferencia
 const CreateTransferBody = z.object({
   paymentId: z.string().uuid('ID de pago inválido'),
   transferMethod: z.enum(['manual', 'automatic', 'cash']).default('manual'),
   notes: z.string().optional(),
 });
 
-// Schema para actualizar transferencia
 const UpdateTransferBody = z.object({
   status: z.enum(['pending', 'completed', 'failed', 'cancelled']),
   notes: z.string().optional(),
 });
 
-// Schema para query de listado
 const ListTransfersQuery = z.object({
   driverId: z.string().uuid().optional(),
   status: z.enum(['pending', 'completed', 'failed', 'cancelled']).optional(),
@@ -32,10 +29,6 @@ const ListTransfersQuery = z.object({
   offset: z.string().optional(),
 });
 
-/**
- * GET /driver-transfers
- * Lista transferencias (solo admin o el driver mismo)
- */
 router.get('/', validateQuery(ListTransfersQuery), authMiddleware, asyncHandler(async (req, res) => {
   const user = req.user as { sub: string; role?: Role } | undefined;
   if (!user?.sub) {
@@ -46,15 +39,12 @@ router.get('/', validateQuery(ListTransfersQuery), authMiddleware, asyncHandler(
   const { driverId, status, limit = '50', offset = '0' } = req.query;
   const admin = createAdminClient();
 
-  // Verificar si es admin o el driver mismo
   const { data: profile } = await admin
     .from('profiles')
     .select('role')
     .eq('id', user.sub)
     .maybeSingle();
 
-  // Por ahora, permitir a cualquier usuario autenticado ver sus propias transferencias
-  // Puedes agregar rol 'admin' más adelante
   const isDriver = profile?.role === 'driver' && (!driverId || driverId === user.sub);
 
   if (!isDriver && driverId && driverId !== user.sub) {
@@ -62,7 +52,6 @@ router.get('/', validateQuery(ListTransfersQuery), authMiddleware, asyncHandler(
     return;
   }
 
-  // Construir query
   let query = admin
     .from('driver_transfers')
     .select(`
@@ -84,7 +73,6 @@ router.get('/', validateQuery(ListTransfersQuery), authMiddleware, asyncHandler(
   if (driverId) {
     query = query.eq('driver_id', driverId as string);
   } else if (isDriver) {
-    // Si es driver y no admin, solo sus transferencias
     query = query.eq('driver_id', user.sub);
   }
 
@@ -103,10 +91,6 @@ router.get('/', validateQuery(ListTransfersQuery), authMiddleware, asyncHandler(
   res.json(data || []);
 }));
 
-/**
- * GET /driver-transfers/pending
- * Lista transferencias pendientes (para dashboard admin)
- */
 router.get('/pending', authMiddleware, asyncHandler(async (req, res) => {
   const user = req.user as { sub: string; role?: Role } | undefined;
   if (!user?.sub) {
@@ -116,7 +100,6 @@ router.get('/pending', authMiddleware, asyncHandler(async (req, res) => {
 
   const admin = createAdminClient();
 
-  // Obtener pagos aprobados que aún no tienen transferencia creada
   const { data: approvedPayments, error: paymentsError } = await admin
     .from('payments')
     .select(`
@@ -136,7 +119,6 @@ router.get('/pending', authMiddleware, asyncHandler(async (req, res) => {
     return;
   }
 
-  // Filtrar pagos que no tienen transferencia
   const paymentsWithoutTransfer = [];
   for (const payment of approvedPayments || []) {
     const { data: transfer } = await admin
@@ -146,7 +128,6 @@ router.get('/pending', authMiddleware, asyncHandler(async (req, res) => {
       .maybeSingle();
 
     if (!transfer) {
-      // Obtener driver_id del envío
       const { data: assignment } = await admin
         .from('driver_assignments')
         .select('driver_id')
@@ -169,7 +150,6 @@ router.get('/pending', authMiddleware, asyncHandler(async (req, res) => {
     }
   }
 
-  // Obtener transferencias pendientes
   const { data: pendingTransfers, error: transfersError } = await admin
     .from('driver_transfers')
     .select(`
@@ -200,10 +180,6 @@ router.get('/pending', authMiddleware, asyncHandler(async (req, res) => {
   });
 }));
 
-/**
- * POST /driver-transfers
- * Crear transferencia manual (solo admin o automático)
- */
 router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(async (req, res) => {
   const user = req.user as { sub: string; role?: Role } | undefined;
   if (!user?.sub) {
@@ -214,7 +190,6 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
   const { paymentId, transferMethod, notes } = req.body;
   const admin = createAdminClient();
 
-  // Verificar que el pago existe y está aprobado
   const { data: payment, error: paymentError } = await admin
     .from('payments')
     .select('id, status, driver_amount, shipment_id')
@@ -231,7 +206,6 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
     return;
   }
 
-  // Obtener driver_id del envío
   const { data: assignment } = await admin
     .from('driver_assignments')
     .select('driver_id')
@@ -245,7 +219,6 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
 
   const driverId = assignment.driver_id;
 
-  // Verificar que no existe transferencia para este pago
   const { data: existing } = await admin
     .from('driver_transfers')
     .select('id')
@@ -257,7 +230,6 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
     return;
   }
 
-  // Crear transferencia
   const { data: transfer, error: transferError } = await admin
     .from('driver_transfers')
     .insert({
@@ -282,10 +254,6 @@ router.post('/', validateBody(CreateTransferBody), authMiddleware, asyncHandler(
   res.status(StatusCodes.CREATED).json(transfer);
 }));
 
-/**
- * PATCH /driver-transfers/:id
- * Actualizar estado de transferencia
- */
 router.patch('/:id', validateParams(z.object({ id: z.string().uuid() })), validateBody(UpdateTransferBody), authMiddleware, asyncHandler(async (req, res) => {
   const user = req.user as { sub: string; role?: Role } | undefined;
   if (!user?.sub) {
@@ -297,7 +265,6 @@ router.patch('/:id', validateParams(z.object({ id: z.string().uuid() })), valida
   const { status, notes } = req.body;
   const admin = createAdminClient();
 
-  // Verificar que la transferencia existe
   const { data: transfer } = await admin
     .from('driver_transfers')
     .select('*')
@@ -309,7 +276,6 @@ router.patch('/:id', validateParams(z.object({ id: z.string().uuid() })), valida
     return;
   }
 
-  // Actualizar
   const updateData: any = { status };
   if (notes !== undefined) {
     updateData.notes = notes;
@@ -333,7 +299,6 @@ router.patch('/:id', validateParams(z.object({ id: z.string().uuid() })), valida
 
   logger.info('Transferencia actualizada', { transferId: id, status });
 
-  // Enviar notificación al driver si se completó
   if (status === 'completed') {
     try {
       const { data: tokens } = await admin
@@ -358,10 +323,6 @@ router.patch('/:id', validateParams(z.object({ id: z.string().uuid() })), valida
   res.json(updated);
 }));
 
-/**
- * GET /driver-transfers/stats
- * Estadísticas de transferencias
- */
 router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
   const user = req.user as { sub: string; role?: Role } | undefined;
   if (!user?.sub) {
@@ -371,14 +332,12 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
 
   const admin = createAdminClient();
 
-  // Obtener rol del usuario para filtrar si es driver
   const { data: profile } = await admin
     .from('profiles')
     .select('role')
     .eq('id', user.sub)
     .maybeSingle();
 
-  // Obtener estadísticas filtradas por driver_id si el usuario es driver
   let query = admin.from('driver_transfers').select('status, amount');
 
   if (profile?.role === 'driver') {
@@ -393,11 +352,9 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
     return;
   }
 
-  // Si es un driver, calcular el saldo real disponible (Pagos - Transferencias)
   let availableBalance = 0;
   if (profile?.role === 'driver') {
     try {
-      // 1. Calcular total ganado (Pagos aprobados vinculados al driver de envíos ENTREGADOS)
       const { data: payments } = await admin
         .from('payments')
         .select(`
@@ -407,16 +364,13 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
         .eq('driver_id', user.sub)
         .eq('status', 'approved');
 
-      // Solo contar pagos de envíos que ya fueron entregados
       const totalEarned = payments
         ?.filter(p => (p.shipment as any)?.current_status === 'delivered')
         .reduce((sum, p) => sum + (p.driver_amount || 0), 0) || 0;
 
-      // 2. Calcular total retirado (Transferencias completadas)
       const totalWithdrawn = transfers?.filter((t: any) => t.status === 'completed')
         .reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
 
-      // El saldo "pendiente" para el driver es lo que ha ganado menos lo que ya retiró exitosamente
       availableBalance = Math.round((totalEarned - totalWithdrawn) * 100) / 100;
     } catch (err) {
       logger.error('Error calculando balance disponible en stats', err as Error);
@@ -430,7 +384,6 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
 
   const totalAmount = transfers?.reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
   
-  // Para el driver, pendingAmount es el saldo que puede retirar
   const pendingAmount = profile?.role === 'driver' 
     ? availableBalance 
     : transfers?.filter((t: any) => t.status === 'pending').reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
@@ -448,10 +401,6 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
   });
 }));
 
-/**
- * POST /driver-transfers/withdraw
- * Inicia el retiro de fondos acumulados para el conductor autenticado
- */
 router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
   const user = req.user as { sub: string; role?: Role } | undefined;
   if (!user?.sub) {
@@ -461,7 +410,6 @@ router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
 
   const admin = createAdminClient();
 
-  // 1. Verificar perfil y conexión con Mercado Pago
   const { data: profile } = await admin
     .from('profiles')
     .select('id, role, mp_user_id, mp_status, full_name')
@@ -478,7 +426,6 @@ router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
     return;
   }
 
-  // 2. Calcular saldo disponible (Pagos aprobados de envíos entregados - Transferencias completadas)
   const { data: payments } = await admin
     .from('payments')
     .select(`
@@ -505,7 +452,6 @@ router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
     return;
   }
 
-  // 3. Ejecutar transferencia vía Mercado Pago
   const { MercadoPagoService } = await import('../services/mercadopago.service');
   const mpService = MercadoPagoService.getInstance();
 
@@ -518,25 +464,23 @@ router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
       externalReference: `withdraw-${user.sub}`,
     });
 
-    // 4. Registrar la transferencia en nuestra BD
     const { data: transferRecord, error: dbError } = await admin
       .from('driver_transfers')
       .insert({
         driver_id: user.sub,
-        payment_id: null, // No vinculado a un único pago, es un retiro global
+        payment_id: null,
         amount: availableBalance,
         status: 'completed',
         transfer_method: 'mercadopago',
         mp_transfer_id: transferResult.id.toString(),
         transferred_at: new Date().toISOString(),
         notes: `Retiro manual exitoso. MP ID: ${transferResult.id}`,
-      } as any) // Cast a any porque payment_id es requerido en el tipo pero permitimos null en la app para retiros globales
+      } as any)
       .select('*')
       .single();
 
     if (dbError) {
       logger.error('Error registrando retiro en BD', dbError as Error);
-      // Notificamos éxito igual porque la transferencia en MP ocurrió
     }
 
     logger.info('Retiro exitoso procesado', { driverId: user.sub, amount: availableBalance });

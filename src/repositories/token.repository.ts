@@ -7,7 +7,6 @@ export class TokenRepository {
   private readonly key: Buffer;
 
   private constructor() {
-    // Usar una clave consistente derivada de SUPABASE_SERVICE_ROLE_KEY o una clave secreta dedicada
     this.key = crypto.scryptSync(env.SUPABASE_SERVICE_ROLE_KEY || 'default-key', 'salt', 32);
   }
 
@@ -18,9 +17,6 @@ export class TokenRepository {
     return TokenRepository.instance;
   }
 
-  /**
-   * Encripta un token
-   */
   public encrypt(token: string): string {
     const iv = crypto.randomBytes(16);
     const cipher = crypto.createCipheriv(this.algorithm, this.key, iv);
@@ -29,13 +25,10 @@ export class TokenRepository {
     return iv.toString('hex') + ':' + encrypted;
   }
 
-  /**
-   * Desencripta un token
-   */
   public decrypt(encryptedToken: string): string {
     try {
       const [ivHex, encrypted] = encryptedToken.split(':');
-      if (!ivHex || !encrypted) return encryptedToken; // Probablemente no está encriptado
+      if (!ivHex || !encrypted) return encryptedToken;
 
       const iv = Buffer.from(ivHex, 'hex');
       const decipher = crypto.createDecipheriv(this.algorithm, this.key, iv);
@@ -43,7 +36,6 @@ export class TokenRepository {
       decrypted += decipher.final('utf8');
       return decrypted;
     } catch (error) {
-      // Si falla la desencriptación, asumimos que el token no estaba encriptado o es inválido
       return encryptedToken;
     }
   }

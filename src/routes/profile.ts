@@ -29,25 +29,22 @@ const UpdateProfileBody = z.object({
   email: emailSchema.optional(),
   avatar_url: avatarUrlSchema,
   address: addressSchema.optional(),
-  // Campos específicos para drivers
   license_number: licenseNumberSchema,
   vehicle_type: vehicleTypeSchema,
   vehicle_plate: vehiclePlateSchema,
   is_available: z.boolean().optional(),
-  // Campos bancarios (para drivers)
   bank_account_type: accountTypeSchema,
   bank_cbu: cbuSchema,
   bank_cvu: cvuSchema,
   bank_alias: aliasSchema,
   bank_name: bankNameSchema,
   bank_account_number: accountNumberSchema,
-  bank_account_holder_name: fullNameSchema.optional(), // Nombre del titular de la cuenta
+  bank_account_holder_name: fullNameSchema.optional(),
   // Campos específicos para business
   business_name: businessNameSchema,
   business_address: addressSchema.optional(),
 });
 
-// Obtener perfil del usuario autenticado
 router.get('/me', asyncHandler(async (req, res) => {
   const user = req.user as { sub: string; email?: string } | undefined;
   if (!user?.sub) {
@@ -58,8 +55,6 @@ router.get('/me', asyncHandler(async (req, res) => {
   const admin = createAdminClient();
   
   try {
-    // Intentar seleccionar todos los campos (incluyendo los nuevos)
-    // Si algunos campos no existen, Supabase los omitirá automáticamente
     const { data, error } = await admin
       .from('profiles')
       .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, mp_user_id, mp_status, mp_token_expires_at, created_at, updated_at')
@@ -67,7 +62,6 @@ router.get('/me', asyncHandler(async (req, res) => {
       .maybeSingle();
 
     if (error) {
-      // Si el error es por columnas que no existen, intentar con campos básicos
       if (error.code === '42703' || error.message?.includes('does not exist')) {
         const { data: basicData, error: basicError } = await admin
           .from('profiles')
@@ -83,7 +77,6 @@ router.get('/me', asyncHandler(async (req, res) => {
           return;
         }
 
-        // Construir respuesta con campos básicos + campos nuevos como null
         const response = {
           ...basicData,
           email: user.email || null,
@@ -120,12 +113,9 @@ router.get('/me', asyncHandler(async (req, res) => {
       return;
     }
 
-    // Si el email no viene de la BD, obtenerlo del JWT
-    // No incluir tokens encriptados por seguridad
     const response = {
       ...(data as Record<string, any>),
       email: (data as Record<string, any>).email || user.email || null,
-      // Incluir campos de Mercado Pago (sin tokens)
       mp_user_id: (data as Record<string, any>).mp_user_id || null,
       mp_status: (data as Record<string, any>).mp_status || null,
       mp_token_expires_at: (data as Record<string, any>).mp_token_expires_at || null,
@@ -139,7 +129,6 @@ router.get('/me', asyncHandler(async (req, res) => {
   }
 }));
 
-// Actualizar perfil
 router.put('/me', asyncHandler(async (req, res) => {
   const user = req.user as { sub: string } | undefined;
   if (!user?.sub) {
@@ -160,25 +149,20 @@ router.put('/me', asyncHandler(async (req, res) => {
   const admin = createAdminClient();
   const userWithEmail = req.user as { sub: string; email?: string };
 
-  // Construir objeto de actualización con todos los campos disponibles
   const updateFields: Record<string, any> = {};
 
-  // Campos básicos (siempre disponibles)
   if (updateData.full_name !== undefined) updateFields.full_name = updateData.full_name || null;
   if (updateData.phone !== undefined) updateFields.phone = updateData.phone || null;
   
-  // Campos nuevos (se guardarán si existen en la BD)
   if (updateData.email !== undefined) updateFields.email = updateData.email || null;
   if (updateData.avatar_url !== undefined) updateFields.avatar_url = updateData.avatar_url || null;
   if (updateData.address !== undefined) updateFields.address = updateData.address || null;
   
-  // Campos específicos para drivers
   if (updateData.license_number !== undefined) updateFields.license_number = updateData.license_number || null;
   if (updateData.vehicle_type !== undefined) updateFields.vehicle_type = updateData.vehicle_type || null;
   if (updateData.vehicle_plate !== undefined) updateFields.vehicle_plate = updateData.vehicle_plate || null;
   if (updateData.is_available !== undefined) updateFields.is_available = updateData.is_available;
   
-  // Campos bancarios (para drivers)
   if (updateData.bank_account_type !== undefined) updateFields.bank_account_type = updateData.bank_account_type || null;
   if (updateData.bank_cbu !== undefined) updateFields.bank_cbu = updateData.bank_cbu || null;
   if (updateData.bank_cvu !== undefined) updateFields.bank_cvu = updateData.bank_cvu || null;
@@ -187,15 +171,12 @@ router.put('/me', asyncHandler(async (req, res) => {
   if (updateData.bank_account_number !== undefined) updateFields.bank_account_number = updateData.bank_account_number || null;
   if (updateData.bank_account_holder_name !== undefined) updateFields.bank_account_holder_name = updateData.bank_account_holder_name || null;
   
-  // Campos específicos para business
   if (updateData.business_name !== undefined) updateFields.business_name = updateData.business_name || null;
   if (updateData.business_address !== undefined) updateFields.business_address = updateData.business_address || null;
 
-  // Agregar updated_at si el campo existe
   updateFields.updated_at = new Date().toISOString();
 
   try {
-    // Si no hay campos para actualizar, solo devolver el perfil actual
     if (Object.keys(updateFields).length === 0) {
       const { data: currentData } = await admin
         .from('profiles')
@@ -219,7 +200,6 @@ router.put('/me', asyncHandler(async (req, res) => {
       return;
     }
 
-    // Intentar actualizar con todos los campos
     let data: any;
     let error: any;
 
@@ -234,7 +214,6 @@ router.put('/me', asyncHandler(async (req, res) => {
       data = result.data;
       error = result.error;
     } catch (updateError: any) {
-      // Si falla por campos que no existen, intentar solo con campos básicos
       if (updateError.code === '42703' || updateError.message?.includes('does not exist')) {
         
         const basicUpdateFields: Record<string, any> = {};
@@ -242,7 +221,6 @@ router.put('/me', asyncHandler(async (req, res) => {
         if (updateData.phone !== undefined) basicUpdateFields.phone = updateData.phone || null;
         
         if (Object.keys(basicUpdateFields).length === 0) {
-          // No hay campos básicos para actualizar, devolver perfil actual
           const { data: currentData } = await admin
             .from('profiles')
             .select('id, role, full_name, phone, created_at')
@@ -297,7 +275,6 @@ router.put('/me', asyncHandler(async (req, res) => {
           return;
         }
 
-        // Construir respuesta con campos básicos + campos nuevos como null
         const response = {
           ...result.data,
           email: userWithEmail.email || null,
@@ -328,13 +305,9 @@ router.put('/me', asyncHandler(async (req, res) => {
       return;
     }
 
-    // Construir respuesta completa
-    // Si data tiene todos los campos, usarlos; si no, completar con null
     const response = {
       ...data,
-      // Asegurar que el email esté presente
       email: (data as any).email || userWithEmail.email || null,
-      // Si faltan campos nuevos, agregarlos como null
       avatar_url: (data as any).avatar_url ?? null,
       address: (data as any).address ?? null,
       license_number: (data as any).license_number ?? null,
@@ -362,7 +335,6 @@ router.put('/me', asyncHandler(async (req, res) => {
   }
 }));
 
-// Actualizar ubicación del driver (lat/lng)
 const UpdateLocationBody = z.object({
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
@@ -387,7 +359,6 @@ router.post('/me/location', asyncHandler(async (req, res) => {
   const { latitude, longitude } = parsed.data;
   const admin = createAdminClient();
 
-  // Verificar que el usuario sea un driver
   const { data: profile } = await admin
     .from('profiles')
     .select('role')
@@ -401,7 +372,6 @@ router.post('/me/location', asyncHandler(async (req, res) => {
     return;
   }
 
-  // Actualizar ubicación (usar campos que existan en la BD)
   const updateFields: Record<string, any> = {
     latitude,
     longitude,

@@ -74,7 +74,6 @@ router.post('/exchange', asyncHandler(async (req, res) => {
       throw new Error('Failed to upsert profile');
     }
 
-    // Generate JWT token
     const token = await admin.auth.admin.generateLink({
       type: 'magiclink',
       email: user.email!,

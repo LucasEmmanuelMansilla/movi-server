@@ -47,14 +47,12 @@ app.use(helmet({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Logging
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 } else {
   app.use(morgan('combined'));
 }
 
-// Health check endpoint (sin rate limiting)
 app.get('/health', (_req: Request, res: Response) => {
   res.status(StatusCodes.OK).json({ 
     status: 'ok', 
@@ -70,13 +68,11 @@ app.use('/shipments', apiRateLimiter, authMiddleware, shipmentRouter);
 app.use('/push', apiRateLimiter, authMiddleware, pushRouter);
 app.use('/chat', apiRateLimiter, authMiddleware, chatRouter);
 app.use('/profile', apiRateLimiter, authMiddleware, profileRouter);
-app.use('/payments', apiRateLimiter, paymentRouter); // Algunos endpoints requieren auth (se aplica dentro)
+app.use('/payments', apiRateLimiter, paymentRouter);
 app.use('/driver-transfers', apiRateLimiter, authMiddleware, driverTransfersRouter);
-// Rutas de Mercado Pago - registrar las más específicas primero
-app.use('/mp/transfers', apiRateLimiter, authMiddleware, mercadoPagoTransfersRouter); // Transferencias de Mercado Pago
-app.use('/mp', apiRateLimiter, mercadoPagoOAuthRouter); // OAuth de Mercado Pago (algunos endpoints requieren auth)
+app.use('/mp/transfers', apiRateLimiter, authMiddleware, mercadoPagoTransfersRouter);
+app.use('/mp', apiRateLimiter, mercadoPagoOAuthRouter);
 
-// Error handling middleware
 app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
   logger.error('Error no manejado', err, {
     path: req.path,
@@ -84,7 +80,6 @@ app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
     ip: req.ip,
   });
 
-  // Errores de validación de Zod
   if (err.name === 'ZodError') {
     return res.status(StatusCodes.BAD_REQUEST).json({
       error: 'Datos inválidos',
@@ -92,7 +87,6 @@ app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
     });
   }
 
-  // Errores de CORS
   if (err.message === 'Not allowed by CORS') {
     return res.status(StatusCodes.FORBIDDEN).json({
       error: 'Origen no permitido',
