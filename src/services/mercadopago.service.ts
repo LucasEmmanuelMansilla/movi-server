@@ -73,9 +73,6 @@ export class MercadoPagoService {
       throw new Error('Mercado Pago no está configurado');
     }
 
-    const commissionPercentage = parseFloat(env.COMMISSION_PERCENTAGE || '10');
-    const marketplaceFee = (params.amount * commissionPercentage) / 100;
-
     const preferenceData: any = {
       items: [
         {
@@ -88,11 +85,11 @@ export class MercadoPagoService {
       ],
       payer: {
         email: params.payerEmail,
-        name: params.payerName,
-        identification: params.payerIdentification || (this.isSandbox ? { type: 'DNI', number: '12345678' } : undefined),
+        ...(params.payerName ? { name: params.payerName } : {}),
+        ...(params.payerIdentification ? { identification: params.payerIdentification } : 
+           (this.isSandbox ? { identification: { type: 'DNI', number: '12345678' } } : {})),
       },
       external_reference: params.shipmentId,
-      marketplace_fee: Math.round(marketplaceFee * 100) / 100,
       binary_mode: false,
       metadata: {
         shipment_id: params.shipmentId,
@@ -103,7 +100,7 @@ export class MercadoPagoService {
       back_urls: params.backUrls,
       auto_return: params.backUrls?.success ? 'approved' : undefined,
       notification_url: params.backUrls?.success 
-        ? `${env.API_URL}/payments/webhook`
+        ? `${env.API_URL.replace(/\/$/, '')}/payments/webhook`
         : undefined,
     };
 
