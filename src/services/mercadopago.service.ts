@@ -9,6 +9,10 @@ export interface CreatePreferenceParams {
   amount: number;
   payerEmail: string;
   payerName?: string;
+  payerIdentification?: {
+    type: string;
+    number: string;
+  };
   backUrls?: {
     success?: string;
     failure?: string;
@@ -85,13 +89,11 @@ export class MercadoPagoService {
       payer: {
         email: params.payerEmail,
         name: params.payerName,
-        ...(this.isSandbox && {
-          identification: { type: 'DNI', number: '12345678' },
-        }),
+        identification: params.payerIdentification || (this.isSandbox ? { type: 'DNI', number: '12345678' } : undefined),
       },
       external_reference: params.shipmentId,
       marketplace_fee: Math.round(marketplaceFee * 100) / 100,
-      binary_mode: true,
+      binary_mode: false,
       metadata: {
         shipment_id: params.shipmentId,
       },

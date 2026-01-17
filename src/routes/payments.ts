@@ -95,6 +95,10 @@ const CreatePaymentBody = z.object({
   shipmentId: z.string().uuid(),
   payerEmail: z.string().email(),
   payerName: z.string().optional(),
+  payerIdentification: z.object({
+    type: z.string(),
+    number: z.string(),
+  }).optional(),
 });
 
 /**
@@ -102,7 +106,7 @@ const CreatePaymentBody = z.object({
  */
 router.post('/create', validateBody(CreatePaymentBody), authMiddleware, asyncHandler(async (req, res) => {
   const user = req.user;
-  const { shipmentId, payerEmail, payerName } = req.body;
+  const { shipmentId, payerEmail, payerName, payerIdentification } = req.body;
   const admin = createAdminClient();
 
   const { data: shipment } = await admin
@@ -129,6 +133,7 @@ router.post('/create', validateBody(CreatePaymentBody), authMiddleware, asyncHan
       amount: price,
       payerEmail,
       payerName,
+      payerIdentification,
       backUrls: {
         success: `${env.API_URL}/payments/success?shipment_id=${shipmentId}`,
         failure: `${env.API_URL}/payments/failure?shipment_id=${shipmentId}`,
@@ -197,14 +202,19 @@ router.post('/webhook', asyncHandler(async (req, res) => {
 
           if (paymentRecord) {
             const mpStatus = mpPayment.status;
+            const statusDetail = mpPayment.status_detail;
             let dbStatus: any = 'pending';
             if (mpStatus === 'approved') dbStatus = 'approved';
+            else if (mpStatus === 'in_process') dbStatus = 'pending'; // Mantener pendiente si está en proceso
             else if (['cancelled', 'rejected'].includes(mpStatus)) dbStatus = 'cancelled';
 
             const updateData: any = {
               status: dbStatus,
               payment_id: mpPayment.id.toString(),
-              payment_data: { mp_payment: mpPayment } as any,
+              payment_data: { 
+                mp_payment: mpPayment,
+                status_detail: statusDetail 
+              } as any,
               updated_at: new Date().toISOString(),
             };
 
