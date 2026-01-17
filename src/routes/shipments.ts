@@ -10,6 +10,11 @@ import { logger } from '../utils/logger';
 import { titleSchema, descriptionSchema, addressSchema, priceSchema, weightSchema, validateBody, validateQuery, validateParams } from '../utils/validation';
 import { parseAddressWithCoordinates, geocodeAddress, filterNearbyUsers, calculateDistance } from '../utils/geolocation';
 
+// Constantes para el cálculo de precios
+const PRICE_PER_KM = 500; // $500 por kilómetro
+const PRICE_PER_KG = 200; // $200 por kilogramo
+const BASE_PRICE = 1000; // Precio base
+
 const router = Router();
 
 const CreateShipmentBody = z.object({
@@ -128,16 +133,10 @@ router.post('/', validateBody(CreateShipmentBody), asyncHandler(async (req, res)
     const distance = calculateDistance(pickupLat, pickupLng, dropoffLat, dropoffLng);
 
     // Fórmula de cálculo: precio base + (distancia_km * precio_por_km) + (peso_kg * factor_peso)
-    const PRICE_PER_KM = 500; // $500 por kilómetro
-    const PRICE_PER_KG = 200; // $200 por kilogramo
-    const BASE_PRICE = 1000; // Precio base
-
     calculatedPrice = BASE_PRICE + (distance * PRICE_PER_KM) + (body.weight * PRICE_PER_KG);
     calculatedPrice = Math.round(calculatedPrice);
   } else {
     // Si no se pueden obtener coordenadas, usar un precio estimado basado solo en peso
-    const PRICE_PER_KG = 200;
-    const BASE_PRICE = 1000;
     calculatedPrice = BASE_PRICE + (body.weight * PRICE_PER_KG);
   }
 
