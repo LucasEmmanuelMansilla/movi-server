@@ -176,14 +176,15 @@ router.post('/create', validateBody(CreatePaymentBody), authMiddleware, asyncHan
  * POST /payments/webhook
  */
 router.post('/webhook', asyncHandler(async (req, res) => {
-  const type = req.body.type || req.query.type;
-  const dataId = req.body.data?.id || req.query.id;
+  const type = req.body.type || req.query.type || req.body.topic || req.query.topic;
+  const dataId = req.body.data?.id || req.query.id || req.body.id;
+
+  logger.info('Recibido webhook de Mercado Pago', { type, dataId });
 
   if ((type === 'payment' || type?.includes('payment')) && dataId) {
     const admin = createAdminClient();
     try {
       // Usar el SDK de MP (vía servicio) para obtener el pago
-      // Nota: El servicio actual no tiene getPaymentById, lo añadiré si es necesario o usaré fetch
       const accessToken = env.MERCADOPAGO_ACCESS_TOKEN;
       const response = await fetch(`https://api.mercadopago.com/v1/payments/${dataId}`, {
         headers: { 'Authorization': `Bearer ${accessToken}` }
@@ -192,6 +193,12 @@ router.post('/webhook', asyncHandler(async (req, res) => {
       if (response.ok) {
         const mpPayment = await response.json();
         const externalReference = mpPayment.external_reference;
+
+        logger.info('Datos del pago MP recuperados', { 
+          paymentId: dataId, 
+          status: mpPayment.status, 
+          externalReference 
+        });
 
         if (externalReference) {
           const { data: paymentRecord } = await admin
@@ -204,9 +211,17 @@ router.post('/webhook', asyncHandler(async (req, res) => {
             const mpStatus = mpPayment.status;
             const statusDetail = mpPayment.status_detail;
             let dbStatus: any = 'pending';
+            
             if (mpStatus === 'approved') dbStatus = 'approved';
-            else if (mpStatus === 'in_process') dbStatus = 'pending'; // Mantener pendiente si está en proceso
+            else if (mpStatus === 'in_process') dbStatus = 'in_process'; // Cambiado de 'pending' a 'in_process' para más claridad
             else if (['cancelled', 'rejected'].includes(mpStatus)) dbStatus = 'cancelled';
+
+            logger.info('Actualizando estado de pago en DB', { 
+              paymentRecordId: paymentRecord.id, 
+              oldStatus: paymentRecord.status, 
+              newStatus: dbStatus,
+              mpStatus: mpStatus
+            });
 
             const updateData: any = {
               status: dbStatus,
@@ -222,13 +237,21 @@ router.post('/webhook', asyncHandler(async (req, res) => {
               updateData.paid_at = new Date().toISOString();
             }
 
-            await admin.from('payments').update(updateData).eq('id', paymentRecord.id);
+            const { error: updateError } = await admin.from('payments').update(updateData).eq('id', paymentRecord.id);
+            if (updateError) {
+              logger.error('Error al actualizar registro de pago', updateError as any);
+            }
 
             if (dbStatus === 'approved' && paymentRecord.status !== 'approved') {
               await processApprovedPayment(paymentRecord, externalReference, admin);
             }
+          } else {
+            logger.warn('No se encontró registro de pago para external_reference', { externalReference });
           }
         }
+      } else {
+        const errorText = await response.text();
+        logger.error('Error al recuperar pago de Mercado Pago API', { status: response.status, error: errorText });
       }
     } catch (e) {
       logger.error('Error en webhook', e as Error);
@@ -245,13 +268,22 @@ router.get('/shipment/:shipmentId', authMiddleware, asyncHandler(async (req, res
   const { shipmentId } = req.params;
   const admin = createAdminClient();
 
+  logger.info('Consultando pago por shipment_id', { shipmentId });
+
   const { data: payment, error } = await admin
     .from('payments')
     .select('*, driver_transfers(*)')
     .eq('shipment_id', shipmentId)
     .maybeSingle();
 
-  if (error || !payment) {
+  if (error) {
+    logger.error('Error al consultar pago', error as any);
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: 'Error interno al consultar pago' });
+    return;
+  }
+
+  if (!payment) {
+    logger.warn('Pago no encontrado para shipment_id', { shipmentId });
     res.status(StatusCodes.NOT_FOUND).json({ error: 'Pago no encontrado' });
     return;
   }
