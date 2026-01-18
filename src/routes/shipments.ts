@@ -793,6 +793,30 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
     // No fallamos aquí, solo registramos el error
   }
 
+  // Emitir actualización en tiempo real a business y driver (si existen)
+  try {
+    const businessId = shipment.created_by;
+    const driverId = assign?.driver_id ?? null;
+    const targets = [businessId, driverId].filter(Boolean) as string[];
+
+    await Promise.allSettled(
+      targets.map(async (userId) => {
+        const channel = admin.channel(`user:${userId}`);
+        try {
+          await channel.send({
+            type: 'broadcast',
+            event: 'shipment_status_changed',
+            payload: { shipmentId, status },
+          });
+        } finally {
+          admin.removeChannel(channel);
+        }
+      })
+    );
+  } catch (err) {
+    logger.warn('Error enviando broadcast shipment_status_changed', { error: err, shipmentId, status });
+  }
+
   // Obtener información del envío para las notificaciones
   const { data: shipmentInfo } = await admin
     .from('shipments')
@@ -861,7 +885,11 @@ router.post('/:id/status', validateParams(UpdateStatusParams), validateBody(Upda
         }
 
         // ✅ MEJORA: No esperar a que se envíe el push para responder al cliente (evita timeouts)
-        sendPush(pushTokens, title, body).catch(e => {
+        sendPush(pushTokens, title, body, {
+          type: 'shipment_status_changed',
+          shipmentId,
+          status,
+        }).catch(e => {
           logger.error('Error enviando push en background', e as Error, { shipmentId });
         });
 

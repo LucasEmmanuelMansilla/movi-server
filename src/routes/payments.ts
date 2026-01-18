@@ -59,7 +59,8 @@ async function processApprovedPayment(
             .eq('is_available', true);
 
           if (drivers) {
-            const nearby = filterNearbyUsers(drivers as any[], lat, lng, 10);
+            // Radio de cercanía: 5km (requisito)
+            const nearby = filterNearbyUsers(drivers as any[], lat, lng, 5);
             if (nearby.length > 0) {
               const { data: tokens } = await admin
                 .from('push_tokens')
@@ -67,13 +68,54 @@ async function processApprovedPayment(
                 .in('user_id', nearby.map(d => d.id));
               
               if (tokens?.length) {
-                await sendPush(tokens.map(t => t.token), 'Nuevo envío disponible', `${shipment.title}`);
+                await sendPush(tokens.map(t => t.token), 'Nuevo envío disponible', `${shipment.title}`, {
+                  type: 'new_shipment_nearby',
+                  shipmentId: shipment.id,
+                });
               }
+
+              // Emitir evento realtime dirigido a cada driver cercano (para actualizar UI en foreground)
+              await Promise.allSettled(
+                nearby.map(async (d) => {
+                  const channel = admin.channel(`user:${d.id}`);
+                  try {
+                    await channel.send({
+                      type: 'broadcast',
+                      event: 'new_shipment_nearby',
+                      payload: {
+                        shipmentId: shipment.id,
+                        title: shipment.title,
+                        pickupLat: lat,
+                        pickupLng: lng,
+                      },
+                    });
+                  } finally {
+                    // Evitar acumulación de canales en el servidor
+                    admin.removeChannel(channel);
+                  }
+                })
+              );
             }
           }
         }
       } catch (e) {
         logger.error('Error en notificaciones de nuevo envío', e as Error);
+      }
+
+      // Emitir evento global (compatibilidad con listener existente en app)
+      try {
+        const channel = admin.channel('global:shipments');
+        await channel.send({
+          type: 'broadcast',
+          event: 'new_shipment',
+          payload: {
+            shipmentId: shipment.id,
+            title: shipment.title,
+          },
+        });
+        admin.removeChannel(channel);
+      } catch (e) {
+        logger.warn('Error enviando broadcast global de new_shipment', { error: e, shipmentId: shipment.id });
       }
     }
 
