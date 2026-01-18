@@ -88,13 +88,24 @@ export class MercadoPagoService {
         ...(params.payerName ? { 
           name: params.payerName,
           first_name: params.payerName.split(' ')[0],
-          last_name: params.payerName.split(' ').slice(1).join(' ') || ' '
-        } : {}),
+          last_name: params.payerName.split(' ').slice(1).join(' ') || 'User'
+        } : (this.isSandbox ? {
+          name: 'Test User',
+          first_name: 'Test',
+          last_name: 'User'
+        } : {})),
         ...(params.payerIdentification ? { identification: params.payerIdentification } : 
            (this.isSandbox ? { identification: { type: 'DNI', number: '12345678' } } : {})),
+        ...(this.isSandbox ? {
+          address: {
+            zip_code: '1000',
+            street_name: 'Calle Falsa',
+            street_number: 123
+          }
+        } : {})
       },
       external_reference: params.shipmentId,
-      binary_mode: false,
+      binary_mode: true, // Forzar respuesta inmediata (aprobado o rechazado)
       metadata: {
         shipment_id: params.shipmentId,
       },
@@ -110,7 +121,7 @@ export class MercadoPagoService {
         excluded_payment_types: [
           { id: 'ticket' }
         ],
-        installments: 1, // Limitar a 1 cuota para simplificar pruebas
+        installments: 1,
       }
     };
 

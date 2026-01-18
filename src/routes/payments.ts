@@ -216,7 +216,11 @@ router.post('/webhook', asyncHandler(async (req, res) => {
         });
 
         if (externalReference || preferenceId) {
-          logger.info('Buscando registro de pago', { externalReference, preferenceId });
+          logger.info('Buscando registro de pago en base de datos', { 
+            externalReference, 
+            preferenceId,
+            paymentId: dataId 
+          });
           
           // Intentar buscar por externalReference (shipment_id) O por preferenceId
           const { data: payments, error: searchError } = await admin
@@ -226,7 +230,7 @@ router.post('/webhook', asyncHandler(async (req, res) => {
             .order('created_at', { ascending: false });
 
           if (searchError) {
-            logger.error('Error al buscar registro de pago en DB', searchError as any);
+            logger.error('Error al ejecutar query de búsqueda en Supabase', searchError as any);
           }
 
           const paymentRecord = payments?.[0];
@@ -264,21 +268,20 @@ router.post('/webhook', asyncHandler(async (req, res) => {
 
             const { error: updateError } = await admin.from('payments').update(updateData).eq('id', paymentRecord.id);
             if (updateError) {
-              logger.error('Error al actualizar registro de pago', updateError as any);
+              logger.error('Error al actualizar registro de pago en Supabase', updateError as any);
             }
 
             if (dbStatus === 'approved' && paymentRecord.status !== 'approved') {
               await processApprovedPayment(paymentRecord, externalReference || paymentRecord.shipment_id, admin);
             }
           } else {
-            logger.warn('No se encontró registro de pago en la base de datos', { 
-              externalReference, 
-              preferenceId,
-              paymentId: dataId 
+            // Log de diagnóstico profundo si no se encuentra
+            const { data: allPayments } = await admin.from('payments').select('shipment_id, preference_id').limit(5);
+            logger.warn('No se encontró el registro de pago. Verificando IDs existentes en DB...', { 
+              buscadoShipmentId: externalReference, 
+              buscadoPreferenceId: preferenceId,
+              algunosExistentes: allPayments
             });
-            
-            // Si no se encuentra, tal vez el externalReference no era el shipment_id. 
-            // Podríamos intentar buscar por metadata si se incluyó.
           }
         }
       } else {
