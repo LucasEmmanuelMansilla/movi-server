@@ -251,7 +251,7 @@ router.post('/webhook', asyncHandler(async (req, res) => {
         }
       } else {
         const errorText = await response.text();
-        logger.error('Error al recuperar pago de Mercado Pago API', { status: response.status, error: errorText });
+        logger.error('Error al recuperar pago de Mercado Pago API', undefined, { status: response.status, error: errorText });
       }
     } catch (e) {
       logger.error('Error en webhook', e as Error);
