@@ -85,7 +85,11 @@ export class MercadoPagoService {
       ],
       payer: {
         email: params.payerEmail,
-        ...(params.payerName ? { name: params.payerName } : {}),
+        ...(params.payerName ? { 
+          name: params.payerName,
+          first_name: params.payerName.split(' ')[0],
+          last_name: params.payerName.split(' ').slice(1).join(' ') || ' '
+        } : {}),
         ...(params.payerIdentification ? { identification: params.payerIdentification } : 
            (this.isSandbox ? { identification: { type: 'DNI', number: '12345678' } } : {})),
       },
@@ -102,7 +106,19 @@ export class MercadoPagoService {
       notification_url: params.backUrls?.success 
         ? `${env.API_URL.replace(/\/$/, '')}/payments/webhook`
         : undefined,
+      payment_methods: {
+        excluded_payment_types: [
+          { id: 'ticket' }
+        ],
+        installments: 1, // Limitar a 1 cuota para simplificar pruebas
+      }
     };
+
+    logger.info('Creando preferencia de Mercado Pago', { 
+      shipmentId: params.shipmentId, 
+      isSandbox: this.isSandbox,
+      notificationUrl: preferenceData.notification_url 
+    });
 
     const response = await this.preferenceClient.create({ body: preferenceData });
 

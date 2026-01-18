@@ -109,6 +109,8 @@ router.post('/create', validateBody(CreatePaymentBody), authMiddleware, asyncHan
   const { shipmentId, payerEmail, payerName, payerIdentification } = req.body;
   const admin = createAdminClient();
 
+  logger.info('Iniciando creación de pago', { shipmentId, payerEmail });
+
   const { data: shipment } = await admin
     .from('shipments')
     .select('*')
@@ -144,22 +146,33 @@ router.post('/create', validateBody(CreatePaymentBody), authMiddleware, asyncHan
     const commissionPercentage = parseFloat(env.COMMISSION_PERCENTAGE || '10');
     const commission = (price * commissionPercentage) / 100;
 
+    const paymentData = {
+      shipment_id: shipmentId,
+      payer_id: user.sub,
+      status: 'pending',
+      amount: price,
+      commission_amount: commission,
+      driver_amount: price - commission,
+      preference_id: preference.preferenceId,
+      payment_data: { sandbox_init_point: preference.sandboxInitPoint } as any,
+    };
+
     const { data: paymentRecord, error: paymentError } = await admin
       .from('payments')
-      .insert({
-        shipment_id: shipmentId,
-        payer_id: user.sub,
-        status: 'pending',
-        amount: price,
-        commission_amount: commission,
-        driver_amount: price - commission,
-        preference_id: preference.preferenceId,
-        payment_data: { sandbox_init_point: preference.sandboxInitPoint } as any,
-      })
+      .insert(paymentData)
       .select('*')
       .single();
 
-    if (paymentError) throw paymentError;
+    if (paymentError) {
+      logger.error('Error al insertar registro de pago en DB', paymentError as any, { paymentData });
+      throw paymentError;
+    }
+
+    logger.info('Registro de pago creado exitosamente', { 
+      paymentRecordId: paymentRecord.id, 
+      preferenceId: preference.preferenceId,
+      shipmentId 
+    });
 
     res.status(StatusCodes.CREATED).json({
       ...preference,
@@ -179,12 +192,11 @@ router.post('/webhook', asyncHandler(async (req, res) => {
   const type = req.body.type || req.query.type || req.body.topic || req.query.topic;
   const dataId = req.body.data?.id || req.query.id || req.body.id;
 
-  logger.info('Recibido webhook de Mercado Pago', { type, dataId });
+  logger.info('Recibido webhook de Mercado Pago', { type, dataId, query: req.query, body: req.body });
 
   if ((type === 'payment' || type?.includes('payment')) && dataId) {
     const admin = createAdminClient();
     try {
-      // Usar el SDK de MP (vía servicio) para obtener el pago
       const accessToken = env.MERCADOPAGO_ACCESS_TOKEN;
       const response = await fetch(`https://api.mercadopago.com/v1/payments/${dataId}`, {
         headers: { 'Authorization': `Bearer ${accessToken}` }
@@ -192,20 +204,32 @@ router.post('/webhook', asyncHandler(async (req, res) => {
       
       if (response.ok) {
         const mpPayment = await response.json();
-        const externalReference = mpPayment.external_reference;
+        const externalReference = mpPayment.external_reference?.trim();
+        const preferenceId = mpPayment.preference_id;
 
         logger.info('Datos del pago MP recuperados', { 
           paymentId: dataId, 
           status: mpPayment.status, 
-          externalReference 
+          statusDetail: mpPayment.status_detail,
+          externalReference,
+          preferenceId
         });
 
-        if (externalReference) {
-          const { data: paymentRecord } = await admin
+        if (externalReference || preferenceId) {
+          logger.info('Buscando registro de pago', { externalReference, preferenceId });
+          
+          // Intentar buscar por externalReference (shipment_id) O por preferenceId
+          const { data: payments, error: searchError } = await admin
             .from('payments')
             .select('*')
-            .eq('shipment_id', externalReference)
-            .maybeSingle();
+            .or(`shipment_id.eq.${externalReference},preference_id.eq.${preferenceId}`)
+            .order('created_at', { ascending: false });
+
+          if (searchError) {
+            logger.error('Error al buscar registro de pago en DB', searchError as any);
+          }
+
+          const paymentRecord = payments?.[0];
 
           if (paymentRecord) {
             const mpStatus = mpPayment.status;
@@ -213,14 +237,15 @@ router.post('/webhook', asyncHandler(async (req, res) => {
             let dbStatus: any = 'pending';
             
             if (mpStatus === 'approved') dbStatus = 'approved';
-            else if (mpStatus === 'in_process') dbStatus = 'in_process'; // Cambiado de 'pending' a 'in_process' para más claridad
+            else if (mpStatus === 'in_process') dbStatus = 'in_process';
             else if (['cancelled', 'rejected'].includes(mpStatus)) dbStatus = 'cancelled';
 
             logger.info('Actualizando estado de pago en DB', { 
               paymentRecordId: paymentRecord.id, 
               oldStatus: paymentRecord.status, 
               newStatus: dbStatus,
-              mpStatus: mpStatus
+              mpStatus,
+              statusDetail
             });
 
             const updateData: any = {
@@ -243,10 +268,17 @@ router.post('/webhook', asyncHandler(async (req, res) => {
             }
 
             if (dbStatus === 'approved' && paymentRecord.status !== 'approved') {
-              await processApprovedPayment(paymentRecord, externalReference, admin);
+              await processApprovedPayment(paymentRecord, externalReference || paymentRecord.shipment_id, admin);
             }
           } else {
-            logger.warn('No se encontró registro de pago para external_reference', { externalReference });
+            logger.warn('No se encontró registro de pago en la base de datos', { 
+              externalReference, 
+              preferenceId,
+              paymentId: dataId 
+            });
+            
+            // Si no se encuentra, tal vez el externalReference no era el shipment_id. 
+            // Podríamos intentar buscar por metadata si se incluyó.
           }
         }
       } else {
