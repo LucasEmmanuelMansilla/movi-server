@@ -351,6 +351,10 @@ router.get('/shipment/:shipmentId', authMiddleware, asyncHandler(async (req, res
     .from('payments')
     .select('*, driver_transfers(*)')
     .eq('shipment_id', shipmentId)
+    // Puede haber múltiples intentos de pago por shipment. Tomamos el más reciente para evitar:
+    // "JSON object requested, multiple (or no) rows returned"
+    .order('created_at', { ascending: false })
+    .limit(1)
     .maybeSingle();
 
   if (error) {

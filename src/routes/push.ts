@@ -185,12 +185,27 @@ export async function sendPush(tokens: string[], title: string, body: string, da
   }
 
   // Intentar usar API v1 primero (recomendada)
-  const projectId = process.env.FCM_PROJECT_ID || 'movi-aead6'; // Del google-services.json
+  // IMPORTANTE: el projectId debe coincidir con el `project_id` del service account.
+  // Si no coincide, FCM v1 suele responder 404 "Requested entity was not found."
+  const envProjectId = process.env.FCM_PROJECT_ID;
   const serviceAccountKeyStr = process.env.FCM_SERVICE_ACCOUNT_KEY;
   
   if (serviceAccountKeyStr) {
     try {
       const serviceAccountKey = JSON.parse(serviceAccountKeyStr);
+      const projectId: string | undefined = envProjectId || serviceAccountKey?.project_id;
+      if (!projectId) {
+        throw new Error(
+          'FCM_PROJECT_ID no está configurado y el service account no incluye project_id'
+        );
+      }
+      if (envProjectId && serviceAccountKey?.project_id && envProjectId !== serviceAccountKey.project_id) {
+        console.warn('[Push] ⚠️ FCM_PROJECT_ID no coincide con el project_id del service account. Usando project_id del service account.', {
+          envProjectId,
+          serviceAccountProjectId: serviceAccountKey.project_id,
+        });
+      }
+
       const accessToken = await getAccessToken(serviceAccountKey);
       
       console.log(`[Push] Enviando ${tokens.length} notificación(es) via FCM v1 API`, { 
