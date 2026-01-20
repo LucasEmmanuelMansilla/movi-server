@@ -15,14 +15,17 @@ const CreateWithdrawalRequestBody = z.object({
   amount: z.number().positive().finite(),
 });
 
+// Estados permitidos para procesar un trámite:
+// - closed: el dinero fue enviado correctamente
+// - cancelled: el trámite se cancela con una razón
 const ProcessWithdrawalBody = z.object({
-  money_sent: z.boolean(),
-  rejection_reason: z.string().optional(),
+  status: z.enum(['closed', 'cancelled']),
+  cancellation_reason: z.string().optional(),
   admin_notes: z.string().optional(),
 });
 
 const ListWithdrawalsQuery = z.object({
-  status: z.enum(['pending', 'completed', 'rejected', 'cancelled']).optional(),
+  status: z.enum(['in_process', 'closed', 'cancelled']).optional(),
   limit: z.string().optional(),
   offset: z.string().optional(),
 });
@@ -42,15 +45,61 @@ router.post('/', validateBody(CreateWithdrawalRequestBody), authMiddleware, asyn
   const admin = createAdminClient();
   const adminAny = admin as any; // `withdrawal_requests` no está tipado en supabase.types
 
-  // Verificar que el usuario sea driver
+  // Verificar que el usuario sea driver y obtener datos bancarios
   const { data: profile } = await admin
     .from('profiles')
-    .select('role')
+    .select(
+      'role, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name'
+    )
     .eq('id', user.sub)
     .maybeSingle();
 
   if (!profile || profile.role !== 'driver') {
     res.status(StatusCodes.FORBIDDEN).json({ error: 'Solo conductores pueden crear trámites de retiro' });
+    return;
+  }
+
+  // Validar que el driver tenga datos bancarios completos según el tipo de cuenta
+  const missingFields: string[] = [];
+  const accountType = (profile as any).bank_account_type as
+    | 'cbu'
+    | 'cvu'
+    | 'alias'
+    | 'checking'
+    | 'savings'
+    | null;
+
+  if (!accountType) {
+    missingFields.push('Tipo de cuenta bancaria');
+  } else {
+    if (accountType === 'cbu' && !(profile as any).bank_cbu) {
+      missingFields.push('CBU');
+    }
+    if (accountType === 'cvu' && !(profile as any).bank_cvu) {
+      missingFields.push('CVU');
+    }
+    if (accountType === 'alias' && !(profile as any).bank_alias) {
+      missingFields.push('Alias bancario');
+    }
+    if ((accountType === 'checking' || accountType === 'savings') && !(profile as any).bank_name) {
+      missingFields.push('Nombre del banco');
+    }
+    if ((accountType === 'checking' || accountType === 'savings') && !(profile as any).bank_account_number) {
+      missingFields.push('Número de cuenta bancaria');
+    }
+  }
+
+  if (!(profile as any).bank_account_holder_name) {
+    missingFields.push('Nombre del titular de la cuenta');
+  }
+
+  if (missingFields.length > 0) {
+    res.status(StatusCodes.BAD_REQUEST).json({
+      error: 'Debes completar tus datos bancarios para poder retirar dinero.',
+      details: {
+        missing_fields: missingFields,
+      },
+    });
     return;
   }
 
@@ -82,7 +131,7 @@ router.post('/', validateBody(CreateWithdrawalRequestBody), authMiddleware, asyn
     .from('withdrawal_requests')
     .select('amount')
     .eq('user_id', user.sub)
-    .eq('status', 'pending');
+    .eq('status', 'in_process');
 
   const pendingAmount = pendingRequests?.reduce(
     (sum: number, r: { amount: number }) => sum + (Number(r.amount) || 0),
@@ -107,13 +156,13 @@ router.post('/', validateBody(CreateWithdrawalRequestBody), authMiddleware, asyn
     return;
   }
 
-  // Crear trámite de retiro
+  // Crear trámite de retiro en estado "in_process"
   const { data: withdrawalRequest, error: createError } = await adminAny
     .from('withdrawal_requests')
     .insert({
       user_id: user.sub,
       amount: amount,
-      status: 'pending',
+      status: 'in_process',
       admin_id: null,
       money_sent: null,
       rejection_reason: null,
@@ -209,7 +258,7 @@ router.get('/pending', authMiddleware, adminMiddleware, asyncHandler(async (req,
       *,
       user:profiles!withdrawal_requests_user_id_fkey(id, full_name, email, phone)
     `)
-    .eq('status', 'pending')
+    .eq('status', 'in_process')
     .order('created_at', { ascending: true });
 
   if (error) {
@@ -220,6 +269,60 @@ router.get('/pending', authMiddleware, adminMiddleware, asyncHandler(async (req,
 
   res.json(data || []);
 }));
+
+/**
+ * GET /withdrawal-requests/:id
+ * Obtener detalle de un trámite (solo admins), incluyendo datos bancarios del driver
+ */
+router.get(
+  '/:id',
+  validateParams(z.object({ id: z.string().uuid() })),
+  authMiddleware,
+  adminMiddleware,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const admin = createAdminClient();
+    const adminAny = admin as any; // `withdrawal_requests` no está tipado en supabase.types
+
+    const { data, error } = await adminAny
+      .from('withdrawal_requests')
+      .select(
+        `
+        *,
+        user:profiles!withdrawal_requests_user_id_fkey(
+          id,
+          full_name,
+          email,
+          phone,
+          bank_account_type,
+          bank_cbu,
+          bank_cvu,
+          bank_alias,
+          bank_name,
+          bank_account_number,
+          bank_account_holder_name
+        )
+      `
+      )
+      .eq('id', id)
+      .maybeSingle();
+
+    if (error) {
+      logger.error('Error obteniendo detalle de trámite de retiro', error as Error);
+      res
+        .status(StatusCodes.INTERNAL_SERVER_ERROR)
+        .json({ error: 'Error obteniendo trámite de retiro' });
+      return;
+    }
+
+    if (!data) {
+      res.status(StatusCodes.NOT_FOUND).json({ error: 'Trámite no encontrado' });
+      return;
+    }
+
+    res.json(data);
+  })
+);
 
 /**
  * PATCH /withdrawal-requests/:id/process
@@ -233,11 +336,11 @@ router.patch('/:id/process',
   asyncHandler(async (req, res) => {
     const user = req.user as { sub: string } | undefined;
     const { id } = req.params;
-    const { money_sent, rejection_reason, admin_notes } = req.body;
+    const { status, cancellation_reason, admin_notes } = req.body;
     const admin = createAdminClient();
     const adminAny = admin as any; // `withdrawal_requests` no está tipado en supabase.types
 
-    // Verificar que el trámite existe y está pendiente
+    // Verificar que el trámite existe y está en proceso
     const { data: withdrawalRequest, error: fetchError } = await adminAny
       .from('withdrawal_requests')
       .select('*')
@@ -255,31 +358,25 @@ router.patch('/:id/process',
       return;
     }
 
-    if (withdrawalRequest.status !== 'pending') {
+    if (withdrawalRequest.status !== 'in_process') {
       res.status(StatusCodes.BAD_REQUEST).json({ error: 'El trámite ya fue procesado' });
       return;
     }
 
     // Determinar el estado final
-    let finalStatus: 'completed' | 'rejected';
-    if (money_sent) {
-      finalStatus = 'completed';
-    } else {
-      finalStatus = 'rejected';
-      if (!rejection_reason) {
-        res.status(StatusCodes.BAD_REQUEST).json({ 
-          error: 'Debe proporcionar una razón cuando no se envía el dinero' 
-        });
-        return;
-      }
+    if (status === 'cancelled' && !cancellation_reason) {
+      res.status(StatusCodes.BAD_REQUEST).json({
+        error: 'Debe proporcionar una razón cuando se cancela el trámite',
+      });
+      return;
     }
 
     // Actualizar trámite
     const updateData: any = {
-      status: finalStatus,
+      status,
       admin_id: user!.sub,
-      money_sent: money_sent,
-      rejection_reason: rejection_reason || null,
+      money_sent: status === 'closed',
+      rejection_reason: cancellation_reason || null,
       admin_notes: admin_notes || null,
       processed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -301,12 +398,12 @@ router.patch('/:id/process',
     logger.info('Trámite procesado', { 
       withdrawalRequestId: id, 
       adminId: user!.sub, 
-      status: finalStatus,
-      moneySent: money_sent 
+      status,
+      moneySent: status === 'closed',
     });
 
     // Si el dinero fue enviado, crear un registro en driver_transfers para mantener consistencia
-    if (money_sent && finalStatus === 'completed') {
+    if (status === 'closed') {
       try {
         await admin
           .from('driver_transfers')
