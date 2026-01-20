@@ -350,7 +350,7 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
 
   const { data: profile } = await admin
     .from('profiles')
-    .select('role, full_name, phone, license_number, vehicle_type, vehicle_plate, mp_status')
+    .select('role, full_name, phone, license_number, vehicle_type, vehicle_plate')
     .eq('id', user.sub)
     .maybeSingle();
 
@@ -367,20 +367,18 @@ router.post('/:id/accept', validateParams(AcceptShipmentParams), validateBody(Ac
     profile.phone &&
     profile.license_number &&
     profile.vehicle_type &&
-    profile.vehicle_plate &&
-    profile.mp_status === 'connected';
+    profile.vehicle_plate;
 
   if (!isProfileComplete) {
     res.status(StatusCodes.FORBIDDEN).json({
-      error: 'Debes completar tu perfil y conectar Mercado Pago para aceptar envíos.',
+      error: 'Debes completar tu perfil para aceptar envíos.',
       details: {
         missing_fields: [
           !profile.full_name && 'Nombre completo',
           !profile.phone && 'Teléfono',
           !profile.license_number && 'Número de licencia',
           !profile.vehicle_type && 'Tipo de vehículo',
-          !profile.vehicle_plate && 'Patente del vehículo',
-          profile.mp_status !== 'connected' && 'Cuenta de Mercado Pago conectada'
+          !profile.vehicle_plate && 'Patente del vehículo'
         ].filter(Boolean)
       }
     });

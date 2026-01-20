@@ -12,8 +12,8 @@ import { chatRouter } from './routes/chat';
 import { profileRouter } from './routes/profile';
 import { paymentRouter } from './routes/payments';
 import { driverTransfersRouter } from './routes/driver-transfers';
-import { mercadoPagoOAuthRouter } from './routes/mercadopago-oauth';
-import { mercadoPagoTransfersRouter } from './routes/mercadopago-transfers';
+// import { mercadoPagoOAuthRouter } from './routes/mercadopago-oauth'; // Deshabilitado - Marketplace removido
+import { withdrawalRequestsRouter } from './routes/withdrawal-requests';
 import { authMiddleware } from './middleware/auth';
 import { apiRateLimiter, authRateLimiter } from './middleware/rateLimiter';
 import { logger } from './utils/logger';
@@ -70,8 +70,8 @@ app.use('/chat', apiRateLimiter, authMiddleware, chatRouter);
 app.use('/profile', apiRateLimiter, authMiddleware, profileRouter);
 app.use('/payments', apiRateLimiter, paymentRouter);
 app.use('/driver-transfers', apiRateLimiter, authMiddleware, driverTransfersRouter);
-app.use('/mp/transfers', apiRateLimiter, authMiddleware, mercadoPagoTransfersRouter);
-app.use('/mp', apiRateLimiter, mercadoPagoOAuthRouter);
+app.use('/withdrawal-requests', apiRateLimiter, authMiddleware, withdrawalRequestsRouter);
+// app.use('/mp', apiRateLimiter, mercadoPagoOAuthRouter); // Deshabilitado - Marketplace removido
 
 app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
   logger.error('Error no manejado', err, {

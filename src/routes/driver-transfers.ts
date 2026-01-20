@@ -430,23 +430,22 @@ router.post('/withdraw', validateBody(WithdrawBody), authMiddleware, asyncHandle
   const requestedAmount = Math.round(Number(requestedAmountRaw) * 100) / 100;
 
   const admin = createAdminClient();
+  // Tabla `withdrawal_requests` no está tipada en `supabase.types.ts`,
+  // por eso usamos un alias sin tipado estricto solo para esas consultas.
+  const adminAny = admin as any;
 
   const { data: profile } = await admin
     .from('profiles')
-    .select('id, role, mp_user_id, mp_status, full_name')
+    .select('id, role')
     .eq('id', user.sub)
-    .single();
+    .maybeSingle();
 
   if (!profile || profile.role !== 'driver') {
     res.status(StatusCodes.FORBIDDEN).json({ error: 'Solo conductores pueden retirar fondos' });
     return;
   }
 
-  if (!profile.mp_user_id || profile.mp_status !== 'connected') {
-    res.status(StatusCodes.BAD_REQUEST).json({ error: 'Debes conectar tu cuenta de Mercado Pago para retirar fondos' });
-    return;
-  }
-
+  // Verificar saldo disponible
   const { data: payments } = await admin
     .from('payments')
     .select(`
@@ -468,111 +467,75 @@ router.post('/withdraw', validateBody(WithdrawBody), authMiddleware, asyncHandle
   const reservedOrPaid = transfers?.reduce((sum, t: any) => sum + (Number(t?.amount) || 0), 0) || 0;
   const availableBalance = Math.round((totalEarned - reservedOrPaid) * 100) / 100;
 
-  if (availableBalance <= MIN_WITHDRAW_AMOUNT_ARS) {
+  // Verificar si hay trámites pendientes que reduzcan el saldo disponible
+  const { data: pendingRequests } = await adminAny
+    .from('withdrawal_requests')
+    .select('amount')
+    .eq('user_id', user.sub)
+    .eq('status', 'pending');
+
+  const pendingAmount = pendingRequests?.reduce(
+    (sum: number, r: { amount: number }) => sum + (Number(r.amount) || 0),
+    0
+  ) || 0;
+  const finalAvailableBalance = Math.round((availableBalance - pendingAmount) * 100) / 100;
+
+  if (finalAvailableBalance <= MIN_WITHDRAW_AMOUNT_ARS) {
     res.status(StatusCodes.BAD_REQUEST).json({ 
       error: `Necesitás más de $${MIN_WITHDRAW_AMOUNT_ARS} disponibles para retirar`,
-      availableBalance,
+      availableBalance: finalAvailableBalance,
     });
     return;
   }
 
-  if (requestedAmount > availableBalance) {
+  if (requestedAmount > finalAvailableBalance) {
     res.status(StatusCodes.BAD_REQUEST).json({ 
       error: 'El monto supera tu saldo disponible',
-      availableBalance,
+      availableBalance: finalAvailableBalance,
     });
     return;
   }
 
-  const { MercadoPagoService } = await import('../services/mercadopago.service');
-  const mpService = MercadoPagoService.getInstance();
-
+  // Crear trámite de retiro manual
   try {
-    const idempotencyKey = `withdraw-${user.sub}-${requestedAmount}-${new Date().getTime()}`;
-    const transferResult = await mpService.transferToUser({
-      amount: requestedAmount,
-      collectorId: profile.mp_user_id,
-      description: `Retiro de fondos Movi - ${profile.full_name}`,
-      externalReference: `withdraw-${user.sub}`,
-      idempotencyKey,
-    });
-
-    const { data: transferRecord, error: dbError } = await admin
-      .from('driver_transfers')
+    const { data: withdrawalRequest, error: createError } = await adminAny
+      .from('withdrawal_requests')
       .insert({
-        driver_id: user.sub,
-        payment_id: null,
+        user_id: user.sub,
         amount: requestedAmount,
-        status: 'completed',
-        transfer_method: 'mercadopago',
-        mp_transfer_id: transferResult?.id?.toString?.() || null,
-        transferred_at: new Date().toISOString(),
-        notes: `Retiro exitoso a Mercado Pago. MP ID: ${transferResult?.id}`,
+        status: 'pending',
+        admin_id: null,
+        money_sent: null,
+        rejection_reason: null,
+        admin_notes: null,
+        processed_at: null,
       } as any)
       .select('*')
       .single();
 
-    if (dbError) {
-      logger.error('Error registrando retiro en BD', dbError as Error);
+    if (createError || !withdrawalRequest) {
+      logger.error('Error creando trámite de retiro', createError as any);
+      res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: 'Error creando trámite de retiro' });
+      return;
     }
 
-    logger.info('Retiro exitoso procesado', { driverId: user.sub, amount: requestedAmount });
+    logger.info('Trámite de retiro creado', { 
+      withdrawalRequestId: withdrawalRequest.id, 
+      userId: user.sub, 
+      amount: requestedAmount 
+    });
 
     res.json({
       success: true,
       amount: requestedAmount,
-      transferId: transferResult?.id,
-      message: `Retiro de $${requestedAmount} procesado exitosamente`
+      withdrawalRequestId: withdrawalRequest.id,
+      message: `Trámite de retiro de $${requestedAmount} creado exitosamente. Un administrador lo procesará pronto.`,
     });
-
   } catch (error: any) {
-    // Fallback: si MP no está habilitado/configurado para payouts por API, crear solicitud pendiente.
-    const msg = String(error?.message || '');
-    const isMarketplaceRequired =
-      msg.includes('marketplace is required') || msg.includes('400011') || msg.includes('"marketplace"');
-    const isPlatformConfigMissing =
-      msg.includes('Falta configuración de plataforma/marketplace') || msg.includes('MP_PLATFORM_ID') || msg.includes('MP_MARKETPLACE_ID');
-
-    if (isMarketplaceRequired || isPlatformConfigMissing) {
-      logger.warn('MP no disponible para retiro automático; creando retiro pendiente', {
-        driverId: user.sub,
-        requestedAmount,
-        reason: msg,
-      });
-
-      const { error: pendingError } = await admin
-        .from('driver_transfers')
-        .insert({
-          driver_id: user.sub,
-          payment_id: null,
-          amount: requestedAmount,
-          status: 'pending',
-          transfer_method: 'manual',
-          transferred_at: null,
-          notes: `Solicitud de retiro creada. Pendiente de procesamiento. Motivo: ${msg}`.slice(0, 500),
-        } as any);
-
-      if (pendingError) {
-        logger.error('Error registrando retiro pendiente en BD', pendingError as Error);
-        res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
-          error: 'Error al registrar la solicitud de retiro',
-          message: 'No se pudo crear el retiro pendiente. Intenta nuevamente.',
-        });
-        return;
-      }
-
-      res.status(StatusCodes.ACCEPTED).json({
-        success: true,
-        amount: requestedAmount,
-        message: 'Solicitud de retiro creada y pendiente de procesamiento. Te avisaremos cuando se acredite.',
-      });
-      return;
-    }
-
     logger.error('Error en proceso de retiro', error);
     res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
-      error: 'Error al procesar el retiro en Mercado Pago',
-      message: msg
+      error: 'Error al crear el trámite de retiro',
+      message: error.message,
     });
   }
 }));

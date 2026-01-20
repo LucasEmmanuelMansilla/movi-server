@@ -5,15 +5,95 @@ import type { Role } from '../types';
 import { StatusCodes } from 'http-status-codes';
 import asyncHandler from 'express-async-handler';
 import { logger } from '../utils/logger';
+import { validateBody } from '../utils/validation';
 
 const router = Router();
 
 const ExchangeBody = z.object({
   access_token: z.string(),
-  role: z.enum(['driver', 'business']).optional(),
+  role: z.enum(['driver', 'business', 'admin']).optional(),
   full_name: z.string().optional(),
   phone: z.string().optional(),
 });
+
+const LoginBody = z.object({
+  email: z.string().email(),
+  password: z.string().min(6),
+});
+
+/**
+ * POST /auth/login
+ * Login para administradores
+ */
+router.post('/login', validateBody(LoginBody), asyncHandler(async (req, res) => {
+  const { email, password } = req.body;
+  const admin = createAdminClient();
+
+  try {
+    // Autenticar con Supabase usando service role
+    const { data: authData, error: authError } = await admin.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
+
+    if (authError || !authData.user) {
+      res.status(StatusCodes.UNAUTHORIZED).json({ 
+        error: 'Email o contraseña incorrectos' 
+      });
+      return;
+    }
+
+    // Verificar que el usuario tenga rol de admin
+    const { data: profile } = await admin
+      .from('profiles')
+      .select('role, full_name, phone')
+      .eq('id', authData.user.id)
+      .maybeSingle();
+
+    if (!profile || profile.role !== 'admin') {
+      res.status(StatusCodes.FORBIDDEN).json({ 
+        error: 'Acceso denegado. Se requiere rol de administrador.' 
+      });
+      return;
+    }
+
+    // Generar token JWT usando el mismo método que exchange
+    const token = await admin.auth.admin.generateLink({
+      type: 'magiclink',
+      email: authData.user.email!,
+      options: {
+        redirectTo: 'movi://auth/callback',
+      },
+    });
+
+    // El token JWT real está en el access_token de la sesión
+    const jwtToken = authData.session?.access_token;
+
+    if (!jwtToken) {
+      res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
+        error: 'Error generando token de sesión' 
+      });
+      return;
+    }
+
+    res.status(StatusCodes.OK).json({
+      token: jwtToken,
+      user: {
+        id: authData.user.id,
+        email: authData.user.email,
+        role: profile.role,
+        full_name: profile.full_name,
+        phone: profile.phone,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Error en login', error as Error);
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'Error al iniciar sesión',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+}));
 
 router.post('/exchange', asyncHandler(async (req, res) => {
   const parsed = ExchangeBody.safeParse(req.body);
