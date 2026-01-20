@@ -234,6 +234,7 @@ export class MercadoPagoService {
     amount: number;
     externalReference: string;
     description: string;
+    idempotencyKey?: string;
   }) {
     if (!this.client) throw new Error('MP client not initialized');
 
@@ -268,7 +269,7 @@ export class MercadoPagoService {
       headers: {
         'Authorization': `Bearer ${env.MERCADOPAGO_ACCESS_TOKEN}`,
         'Content-Type': 'application/json',
-        'X-Idempotency-Key': crypto.randomUUID(),
+        'X-Idempotency-Key': params.idempotencyKey || crypto.randomUUID(),
       },
       body: JSON.stringify(body),
     });
