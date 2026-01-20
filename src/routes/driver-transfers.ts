@@ -11,6 +11,8 @@ import { sendPush } from './push';
 
 const router = Router();
 
+const MIN_WITHDRAW_AMOUNT_ARS = 1000;
+
 const CreateTransferBody = z.object({
   paymentId: z.string().uuid('ID de pago inválido'),
   transferMethod: z.enum(['manual', 'automatic', 'cash']).default('manual'),
@@ -27,6 +29,20 @@ const ListTransfersQuery = z.object({
   status: z.enum(['pending', 'completed', 'failed', 'cancelled']).optional(),
   limit: z.string().optional(),
   offset: z.string().optional(),
+});
+
+const WithdrawBody = z.object({
+  amount: z.preprocess((v) => {
+    if (typeof v === 'string') {
+      const normalized = v.replace(',', '.').trim();
+      const n = Number(normalized);
+      return Number.isFinite(n) ? n : v;
+    }
+    return v;
+  }, z.number().finite().positive())
+  .refine((n) => n > MIN_WITHDRAW_AMOUNT_ARS, {
+    message: `El monto mínimo de retiro debe ser mayor a $${MIN_WITHDRAW_AMOUNT_ARS}`,
+  }),
 });
 
 router.get('/', validateQuery(ListTransfersQuery), authMiddleware, asyncHandler(async (req, res) => {
@@ -401,12 +417,15 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
   });
 }));
 
-router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
+router.post('/withdraw', validateBody(WithdrawBody), authMiddleware, asyncHandler(async (req, res) => {
   const user = req.user as { sub: string; role?: Role } | undefined;
   if (!user?.sub) {
     res.status(StatusCodes.UNAUTHORIZED).json({ error: 'No autorizado' });
     return;
   }
+
+  const requestedAmountRaw = (req.body as any)?.amount;
+  const requestedAmount = Math.round(Number(requestedAmountRaw) * 100) / 100;
 
   const admin = createAdminClient();
 
@@ -444,11 +463,22 @@ router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
   const totalEarned = payments
     ?.filter(p => (p.shipment as any)?.current_status === 'delivered')
     .reduce((sum, p) => sum + (p.driver_amount || 0), 0) || 0;
-  const totalWithdrawn = transfers?.reduce((sum, t) => sum + (t.amount || 0), 0) || 0;
+  const totalWithdrawn = transfers?.reduce((sum, t: any) => sum + (Number(t?.amount) || 0), 0) || 0;
   const availableBalance = Math.round((totalEarned - totalWithdrawn) * 100) / 100;
 
-  if (availableBalance <= 0) {
-    res.status(StatusCodes.BAD_REQUEST).json({ error: 'No tienes saldo disponible para retirar' });
+  if (availableBalance <= MIN_WITHDRAW_AMOUNT_ARS) {
+    res.status(StatusCodes.BAD_REQUEST).json({ 
+      error: `Necesitás más de $${MIN_WITHDRAW_AMOUNT_ARS} disponibles para retirar`,
+      availableBalance,
+    });
+    return;
+  }
+
+  if (requestedAmount > availableBalance) {
+    res.status(StatusCodes.BAD_REQUEST).json({ 
+      error: 'El monto supera tu saldo disponible',
+      availableBalance,
+    });
     return;
   }
 
@@ -456,12 +486,13 @@ router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
   const mpService = MercadoPagoService.getInstance();
 
   try {
-    const idempotencyKey = `withdraw-${user.sub}-${new Date().getTime()}`;
+    const idempotencyKey = `withdraw-${user.sub}-${requestedAmount}-${new Date().getTime()}`;
     const transferResult = await mpService.transferToUser({
-      amount: availableBalance,
+      amount: requestedAmount,
       collectorId: profile.mp_user_id,
       description: `Retiro de fondos Movi - ${profile.full_name}`,
       externalReference: `withdraw-${user.sub}`,
+      idempotencyKey,
     });
 
     const { data: transferRecord, error: dbError } = await admin
@@ -469,12 +500,12 @@ router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
       .insert({
         driver_id: user.sub,
         payment_id: null,
-        amount: availableBalance,
+        amount: requestedAmount,
         status: 'completed',
         transfer_method: 'mercadopago',
-        mp_transfer_id: transferResult.id.toString(),
+        mp_transfer_id: transferResult?.id?.toString?.() || null,
         transferred_at: new Date().toISOString(),
-        notes: `Retiro manual exitoso. MP ID: ${transferResult.id}`,
+        notes: `Retiro exitoso a Mercado Pago. MP ID: ${transferResult?.id}`,
       } as any)
       .select('*')
       .single();
@@ -483,17 +514,17 @@ router.post('/withdraw', authMiddleware, asyncHandler(async (req, res) => {
       logger.error('Error registrando retiro en BD', dbError as Error);
     }
 
-    logger.info('Retiro exitoso procesado', { driverId: user.sub, amount: availableBalance });
+    logger.info('Retiro exitoso procesado', { driverId: user.sub, amount: requestedAmount });
 
     res.json({
       success: true,
-      amount: availableBalance,
-      transferId: transferResult.id,
-      message: `Retiro de $${availableBalance} procesado exitosamente`
+      amount: requestedAmount,
+      transferId: transferResult?.id,
+      message: `Retiro de $${requestedAmount} procesado exitosamente`
     });
 
   } catch (error: any) {
-    logger.error('Error en proceso de retiro manual', error);
+    logger.error('Error en proceso de retiro', error);
     res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
       error: 'Error al procesar el retiro en Mercado Pago',
       message: error.message
