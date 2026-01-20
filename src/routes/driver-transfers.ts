@@ -384,10 +384,12 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
         ?.filter(p => (p.shipment as any)?.current_status === 'delivered')
         .reduce((sum, p) => sum + (p.driver_amount || 0), 0) || 0;
 
-      const totalWithdrawn = transfers?.filter((t: any) => t.status === 'completed')
-        .reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
+      // Reservar también transferencias pendientes para evitar doble retiro/solapamiento.
+      const reservedOrPaid = transfers
+        ?.filter((t: any) => t.status === 'completed' || t.status === 'pending')
+        .reduce((sum: number, t: any) => sum + (Number(t?.amount) || 0), 0) || 0;
 
-      availableBalance = Math.round((totalEarned - totalWithdrawn) * 100) / 100;
+      availableBalance = Math.round((totalEarned - reservedOrPaid) * 100) / 100;
     } catch (err) {
       logger.error('Error calculando balance disponible en stats', err as Error);
     }
@@ -456,15 +458,15 @@ router.post('/withdraw', validateBody(WithdrawBody), authMiddleware, asyncHandle
 
   const { data: transfers } = await admin
     .from('driver_transfers')
-    .select('amount')
+    .select('status, amount')
     .eq('driver_id', user.sub)
-    .eq('status', 'completed');
+    .in('status', ['pending', 'completed'] as any);
 
   const totalEarned = payments
     ?.filter(p => (p.shipment as any)?.current_status === 'delivered')
     .reduce((sum, p) => sum + (p.driver_amount || 0), 0) || 0;
-  const totalWithdrawn = transfers?.reduce((sum, t: any) => sum + (Number(t?.amount) || 0), 0) || 0;
-  const availableBalance = Math.round((totalEarned - totalWithdrawn) * 100) / 100;
+  const reservedOrPaid = transfers?.reduce((sum, t: any) => sum + (Number(t?.amount) || 0), 0) || 0;
+  const availableBalance = Math.round((totalEarned - reservedOrPaid) * 100) / 100;
 
   if (availableBalance <= MIN_WITHDRAW_AMOUNT_ARS) {
     res.status(StatusCodes.BAD_REQUEST).json({ 
@@ -524,10 +526,53 @@ router.post('/withdraw', validateBody(WithdrawBody), authMiddleware, asyncHandle
     });
 
   } catch (error: any) {
+    // Fallback: si MP no está habilitado/configurado para payouts por API, crear solicitud pendiente.
+    const msg = String(error?.message || '');
+    const isMarketplaceRequired =
+      msg.includes('marketplace is required') || msg.includes('400011') || msg.includes('"marketplace"');
+    const isPlatformConfigMissing =
+      msg.includes('Falta configuración de plataforma/marketplace') || msg.includes('MP_PLATFORM_ID') || msg.includes('MP_MARKETPLACE_ID');
+
+    if (isMarketplaceRequired || isPlatformConfigMissing) {
+      logger.warn('MP no disponible para retiro automático; creando retiro pendiente', {
+        driverId: user.sub,
+        requestedAmount,
+        reason: msg,
+      });
+
+      const { error: pendingError } = await admin
+        .from('driver_transfers')
+        .insert({
+          driver_id: user.sub,
+          payment_id: null,
+          amount: requestedAmount,
+          status: 'pending',
+          transfer_method: 'manual',
+          transferred_at: null,
+          notes: `Solicitud de retiro creada. Pendiente de procesamiento. Motivo: ${msg}`.slice(0, 500),
+        } as any);
+
+      if (pendingError) {
+        logger.error('Error registrando retiro pendiente en BD', pendingError as Error);
+        res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+          error: 'Error al registrar la solicitud de retiro',
+          message: 'No se pudo crear el retiro pendiente. Intenta nuevamente.',
+        });
+        return;
+      }
+
+      res.status(StatusCodes.ACCEPTED).json({
+        success: true,
+        amount: requestedAmount,
+        message: 'Solicitud de retiro creada y pendiente de procesamiento. Te avisaremos cuando se acredite.',
+      });
+      return;
+    }
+
     logger.error('Error en proceso de retiro', error);
     res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
       error: 'Error al procesar el retiro en Mercado Pago',
-      message: error.message
+      message: msg
     });
   }
 }));

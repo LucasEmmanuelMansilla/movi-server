@@ -20,6 +20,14 @@ const envSchema = z.object({
   MP_CLIENT_ID: z.string().optional(),
   MP_CLIENT_SECRET: z.string().optional(),
   MP_REDIRECT_URI: z.string().url("MP_REDIRECT_URI debe ser una URL válida"),
+  // Identificador de plataforma (Partners). Se envía como header `x-platform-id`.
+  // Mercado Pago lo entrega/activa para cuentas plataforma (no es el application_id).
+  MP_PLATFORM_ID: z.string().optional(),
+  // Identificador de marketplace requerido por ciertos flujos de split/advanced_payments.
+  // Si no lo tenés, dejalo vacío y se usará MP_PLATFORM_ID (si existe).
+  MP_MARKETPLACE_ID: z.string().optional(),
+  // Backwards-compat (evita romper .env existentes)
+  MP_MARKETPLACE: z.string().optional(),
   
   MP_WEBHOOK_SECRET: z.string().optional(),
   

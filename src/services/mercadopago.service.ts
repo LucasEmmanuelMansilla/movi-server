@@ -239,8 +239,20 @@ export class MercadoPagoService {
     if (!this.client) throw new Error('MP client not initialized');
 
     const applicationId = env.MP_APPLICATION_ID || env.MP_CLIENT_ID;
+    const platformId = (env as any).MP_PLATFORM_ID as string | undefined;
+    const marketplace =
+      (env as any).MP_MARKETPLACE_ID as string | undefined ||
+      (env as any).MP_MARKETPLACE as string | undefined ||
+      platformId ||
+      applicationId;
+    if (!marketplace) {
+      throw new Error(
+        'Falta configuración de plataforma/marketplace (MP_PLATFORM_ID o MP_MARKETPLACE_ID). Mercado Pago requiere identificar la plataforma para este flujo.'
+      );
+    }
     
     const body = {
+      marketplace,
       application_id: applicationId,
       external_reference: params.externalReference,
       description: params.description,
@@ -269,6 +281,7 @@ export class MercadoPagoService {
       headers: {
         'Authorization': `Bearer ${env.MERCADOPAGO_ACCESS_TOKEN}`,
         'Content-Type': 'application/json',
+        ...(platformId ? { 'x-platform-id': platformId } : {}),
         'X-Idempotency-Key': params.idempotencyKey || crypto.randomUUID(),
       },
       body: JSON.stringify(body),
