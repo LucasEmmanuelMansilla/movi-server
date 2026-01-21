@@ -114,7 +114,7 @@ router.get('/me', asyncHandler(async (req, res) => {
       return;
     }
 
-    const response = {
+    const response: Record<string, any> = {
       ...(data as Record<string, any>),
       email: (data as Record<string, any>).email || user.email || null,
       mp_user_id: (data as Record<string, any>).mp_user_id || null,
