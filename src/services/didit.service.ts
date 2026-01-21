@@ -34,10 +34,12 @@ export interface DiditSessionData {
 export class DiditService {
   private apiKey: string;
   private apiUrl: string;
+  private defaultWorkflowId: string;
 
   constructor() {
     this.apiKey = env.DIDIT_API_KEY;
     this.apiUrl = env.DIDIT_API_URL || 'https://verification.didit.me';
+    this.defaultWorkflowId = env.DIDIT_WORKFLOW_ID;
   }
 
   /**
@@ -60,7 +62,7 @@ export class DiditService {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          workflow_id: workflowId || 'default_ar', // Workflow por defecto para Argentina
+          workflow_id: workflowId || this.defaultWorkflowId,
           vendor_data: userId,
           callback: `${env.API_URL}/kyc/webhook`,
           contact_details: email ? { email } : undefined,
@@ -91,7 +93,7 @@ export class DiditService {
       return {
         session_id: data.session_id,
         url: data.url,
-        workflow_id: data.workflow_id || workflowId || 'default_ar',
+        workflow_id: data.workflow_id || workflowId || this.defaultWorkflowId,
       };
     } catch (error: any) {
       logger.error('Error en createVerificationSession', error as Error, { userId });
