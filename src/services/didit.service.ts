@@ -151,18 +151,40 @@ export class DiditService {
     diditStatus: string,
     overallStatus?: string
   ): KYCStatus {
-    if (diditStatus === 'completed' && overallStatus === 'approved') {
+    const status = diditStatus.toLowerCase();
+    const overall = overallStatus?.toLowerCase();
+
+    if ((status === 'completed' || status === 'finished') && overall === 'approved') {
       return 'approved';
     }
-    if (diditStatus === 'completed' && overallStatus === 'rejected') {
+    if (
+      (status === 'completed' || status === 'finished') &&
+      overall === 'rejected'
+    ) {
       return 'rejected';
     }
-    if (diditStatus === 'failed' || diditStatus === 'expired') {
+    if (
+      status === 'failed' ||
+      status === 'expired' ||
+      overall === 'rejected'
+    ) {
       return 'rejected';
     }
-    if (diditStatus === 'pending') {
+    if (
+      status === 'pending' ||
+      status === 'in_progress' ||
+      status === 'in review' ||
+      status === 'in_review' ||
+      overall === 'pending'
+    ) {
       return 'in_progress';
     }
+    
+    // Si terminó pero aún no hay resultado final, lo tratamos como en progreso
+    if (status === 'completed' || status === 'finished') {
+      return 'in_progress';
+    }
+
     return 'pending';
   }
 

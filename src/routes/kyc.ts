@@ -233,6 +233,48 @@ const WebhookBody = z.object({
 });
 
 /**
+ * GET /kyc/webhook
+ * Maneja la redirección del usuario después de completar la verificación en el WebView
+ */
+router.get(
+  '/webhook',
+  asyncHandler(async (req, res) => {
+    const { status, verificationSessionId } = req.query;
+
+    logger.info('Usuario redirigido desde Didit', {
+      status,
+      verificationSessionId,
+    });
+
+    // Devolver una página HTML simple que la app puede detectar
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Verificación Finalizada</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <style>
+            body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; padding: 20px; }
+            h1 { color: #2ecc71; }
+            p { color: #666; }
+          </style>
+        </head>
+        <body>
+          <h1>¡Verificación enviada!</h1>
+          <p>Estamos procesando tus datos. Ya puedes cerrar esta ventana o esperar a ser redirigido.</p>
+          <script>
+            // Notificar al WebView de React Native si es posible
+            if (window.ReactNativeWebView) {
+              window.ReactNativeWebView.postMessage('verification_completed');
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  })
+);
+
+/**
  * POST /kyc/webhook
  * Webhook público para recibir notificaciones de Didit
  * No requiere autenticación, pero debería validarse la firma del webhook
