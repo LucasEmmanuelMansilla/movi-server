@@ -30,6 +30,11 @@ const envSchema = z.object({
   FCM_PROJECT_ID: z.string().optional(),
   FCM_SERVICE_ACCOUNT_KEY: z.string().optional(),
   ALLOWED_ORIGINS: z.string().optional(),
+  
+  // Didit KYC Configuration
+  DIDIT_API_KEY: z.string().min(1, "DIDIT_API_KEY es requerido"),
+  DIDIT_API_URL: z.string().url("DIDIT_API_URL debe ser una URL válida").default("https://verification.didit.me"),
+  DIDIT_WEBHOOK_SECRET: z.string().optional(),
 })
 
 let env: z.infer<typeof envSchema>;

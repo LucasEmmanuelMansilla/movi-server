@@ -210,6 +210,15 @@ export type Database = {
           updated_at: string | null
           vehicle_plate: string | null
           vehicle_type: string | null
+          kyc_status: string | null
+          kyc_didit_session_id: string | null
+          kyc_validated_at: string | null
+          kyc_document_number: string | null
+          kyc_document_type: string | null
+          kyc_first_name: string | null
+          kyc_last_name: string | null
+          kyc_birth_date: string | null
+          kyc_nationality: string | null
         }
         Insert: {
           address?: string | null
@@ -242,6 +251,15 @@ export type Database = {
           updated_at?: string | null
           vehicle_plate?: string | null
           vehicle_type?: string | null
+          kyc_status?: string | null
+          kyc_didit_session_id?: string | null
+          kyc_validated_at?: string | null
+          kyc_document_number?: string | null
+          kyc_document_type?: string | null
+          kyc_first_name?: string | null
+          kyc_last_name?: string | null
+          kyc_birth_date?: string | null
+          kyc_nationality?: string | null
         }
         Update: {
           address?: string | null
@@ -274,6 +292,15 @@ export type Database = {
           updated_at?: string | null
           vehicle_plate?: string | null
           vehicle_type?: string | null
+          kyc_status?: string | null
+          kyc_didit_session_id?: string | null
+          kyc_validated_at?: string | null
+          kyc_document_number?: string | null
+          kyc_document_type?: string | null
+          kyc_first_name?: string | null
+          kyc_last_name?: string | null
+          kyc_birth_date?: string | null
+          kyc_nationality?: string | null
         }
         Relationships: []
       },

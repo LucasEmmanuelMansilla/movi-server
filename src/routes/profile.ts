@@ -57,7 +57,7 @@ router.get('/me', asyncHandler(async (req, res) => {
   try {
     const { data, error } = await admin
       .from('profiles')
-      .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, mp_user_id, mp_status, mp_token_expires_at, created_at, updated_at')
+      .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, mp_user_id, mp_status, mp_token_expires_at, kyc_status, kyc_document_number, kyc_document_type, kyc_first_name, kyc_last_name, kyc_birth_date, kyc_nationality, kyc_validated_at, created_at, updated_at')
       .eq('id', user.sub)
       .maybeSingle();
 
@@ -65,7 +65,7 @@ router.get('/me', asyncHandler(async (req, res) => {
       if (error.code === '42703' || error.message?.includes('does not exist')) {
         const { data: basicData, error: basicError } = await admin
           .from('profiles')
-          .select('id, role, full_name, phone, created_at')
+          .select('id, role, full_name, phone, kyc_status, created_at')
           .eq('id', user.sub)
           .maybeSingle();
         
@@ -180,7 +180,7 @@ router.put('/me', asyncHandler(async (req, res) => {
     if (Object.keys(updateFields).length === 0) {
       const { data: currentData } = await admin
         .from('profiles')
-        .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, created_at, updated_at')
+        .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, kyc_status, kyc_document_number, kyc_document_type, kyc_first_name, kyc_last_name, kyc_birth_date, kyc_nationality, kyc_validated_at, created_at, updated_at')
         .eq('id', user.sub)
         .maybeSingle();
       
@@ -208,7 +208,7 @@ router.put('/me', asyncHandler(async (req, res) => {
         .from('profiles')
         .update(updateFields)
         .eq('id', user.sub)
-        .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, created_at, updated_at')
+        .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, kyc_status, kyc_document_number, kyc_document_type, kyc_first_name, kyc_last_name, kyc_birth_date, kyc_nationality, kyc_validated_at, created_at, updated_at')
         .maybeSingle();
       
       data = result.data;
@@ -223,7 +223,7 @@ router.put('/me', asyncHandler(async (req, res) => {
         if (Object.keys(basicUpdateFields).length === 0) {
           const { data: currentData } = await admin
             .from('profiles')
-            .select('id, role, full_name, phone, created_at')
+            .select('id, role, full_name, phone, kyc_status, created_at')
             .eq('id', user.sub)
             .maybeSingle();
           
@@ -263,7 +263,7 @@ router.put('/me', asyncHandler(async (req, res) => {
           .from('profiles')
           .update(basicUpdateFields)
           .eq('id', user.sub)
-          .select('id, role, full_name, phone, created_at')
+          .select('id, role, full_name, phone, kyc_status, created_at')
           .maybeSingle();
         
         if (result.error) throw result.error;
@@ -323,6 +323,14 @@ router.put('/me', asyncHandler(async (req, res) => {
       bank_name: (data as any).bank_name ?? null,
       bank_account_number: (data as any).bank_account_number ?? null,
       bank_account_holder_name: (data as any).bank_account_holder_name ?? null,
+      kyc_status: (data as any).kyc_status ?? null,
+      kyc_document_number: (data as any).kyc_document_number ?? null,
+      kyc_document_type: (data as any).kyc_document_type ?? null,
+      kyc_first_name: (data as any).kyc_first_name ?? null,
+      kyc_last_name: (data as any).kyc_last_name ?? null,
+      kyc_birth_date: (data as any).kyc_birth_date ?? null,
+      kyc_nationality: (data as any).kyc_nationality ?? null,
+      kyc_validated_at: (data as any).kyc_validated_at ?? null,
       updated_at: (data as any).updated_at ?? null,
     };
 

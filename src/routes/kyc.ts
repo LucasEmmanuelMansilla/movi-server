@@ -1,0 +1,351 @@
+import { Router } from 'express';
+import { z } from 'zod';
+import { createAdminClient } from '../lib/supabase';
+import { StatusCodes } from 'http-status-codes';
+import asyncHandler from 'express-async-handler';
+import { logger } from '../utils/logger';
+import { authMiddleware } from '../middleware/auth';
+import { diditService, KYCStatus } from '../services/didit.service';
+import { validateBody } from '../utils/validation';
+
+const router = Router();
+
+/**
+ * POST /kyc/init
+ * Inicializa una sesión de validación KYC con Didit
+ */
+router.post(
+  '/init',
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const user = req.user as { sub: string; email?: string } | undefined;
+    if (!user?.sub) {
+      res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const admin = createAdminClient();
+
+    try {
+      // Verificar que el usuario sea driver (business no requiere KYC)
+      const { data: profile } = await admin
+        .from('profiles')
+        .select('role, kyc_status, email')
+        .eq('id', user.sub)
+        .maybeSingle();
+
+      if (!profile) {
+        res.status(StatusCodes.NOT_FOUND).json({ error: 'Profile not found' });
+        return;
+      }
+
+      if (profile.role !== 'driver') {
+        res.status(StatusCodes.FORBIDDEN).json({
+          error: 'KYC validation is only required for drivers',
+        });
+        return;
+      }
+
+      // Si ya está aprobado, no necesita nueva validación
+      if (profile.kyc_status === 'approved') {
+        res.status(StatusCodes.OK).json({
+          message: 'KYC already approved',
+          status: 'approved',
+        });
+        return;
+      }
+
+      // Crear sesión en Didit
+      const session = await diditService.createVerificationSession(
+        user.sub,
+        profile.email || user.email
+      );
+
+      // Actualizar perfil con session_id y estado
+      const { error: updateError } = await admin
+        .from('profiles')
+        .update({
+          kyc_didit_session_id: session.session_id,
+          kyc_status: 'in_progress',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', user.sub);
+
+      if (updateError) {
+        logger.error('Error actualizando perfil con session_id', updateError as Error, {
+          userId: user.sub,
+        });
+        throw new Error('Failed to update profile with session ID');
+      }
+
+      logger.info('Sesión KYC iniciada', {
+        userId: user.sub,
+        sessionId: session.session_id,
+      });
+
+      res.status(StatusCodes.OK).json({
+        session_id: session.session_id,
+        verification_url: session.url,
+        status: 'in_progress',
+      });
+    } catch (error: any) {
+      logger.error('Error iniciando KYC', error as Error, { userId: user.sub });
+      res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+        error: 'Failed to initialize KYC verification',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
+  })
+);
+
+/**
+ * GET /kyc/status
+ * Obtiene el estado actual de la validación KYC del usuario
+ */
+router.get(
+  '/status',
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    const user = req.user as { sub: string } | undefined;
+    if (!user?.sub) {
+      res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const admin = createAdminClient();
+
+    try {
+      const { data: profile, error: profileError } = await admin
+        .from('profiles')
+        .select(
+          'role, kyc_status, kyc_didit_session_id, kyc_validated_at, kyc_document_number, kyc_document_type, kyc_first_name, kyc_last_name, kyc_birth_date, kyc_nationality'
+        )
+        .eq('id', user.sub)
+        .maybeSingle();
+
+      if (profileError) {
+        throw profileError;
+      }
+
+      if (!profile) {
+        res.status(StatusCodes.NOT_FOUND).json({ error: 'Profile not found' });
+        return;
+      }
+
+      // Si hay una sesión activa, verificar estado en Didit
+      let currentStatus: KYCStatus = (profile.kyc_status as KYCStatus) || 'pending';
+      let verificationData = null;
+
+      if (profile.kyc_didit_session_id && profile.kyc_status === 'in_progress') {
+        try {
+          const diditData = await diditService.getVerificationStatus(
+            profile.kyc_didit_session_id
+          );
+          currentStatus = diditService.mapDiditStatusToKYCStatus(
+            diditData.status,
+            diditData.verification_result?.overall_status
+          );
+
+          // Si cambió el estado, actualizar en la base de datos
+          if (currentStatus !== profile.kyc_status) {
+            const updateData: any = {
+              kyc_status: currentStatus,
+              updated_at: new Date().toISOString(),
+            };
+
+            // Si fue aprobado, guardar datos extraídos
+            if (currentStatus === 'approved' && diditData.verification_result) {
+              const doc = diditData.verification_result.document;
+              const extracted = doc?.extracted_data;
+
+              updateData.kyc_validated_at = new Date().toISOString();
+              if (doc?.type) updateData.kyc_document_type = doc.type;
+              if (doc?.number) updateData.kyc_document_number = doc.number;
+              if (extracted?.first_name) updateData.kyc_first_name = extracted.first_name;
+              if (extracted?.last_name) updateData.kyc_last_name = extracted.last_name;
+              if (extracted?.birth_date) updateData.kyc_birth_date = extracted.birth_date;
+              if (extracted?.nationality) updateData.kyc_nationality = extracted.nationality;
+            }
+
+            await admin.from('profiles').update(updateData).eq('id', user.sub);
+          }
+
+          verificationData = diditData.verification_result;
+        } catch (error: any) {
+          logger.error('Error consultando estado en Didit', error as Error, {
+            sessionId: profile.kyc_didit_session_id,
+          });
+          // Continuar con el estado guardado en DB si falla la consulta
+        }
+      }
+
+      res.status(StatusCodes.OK).json({
+        status: currentStatus,
+        session_id: profile.kyc_didit_session_id,
+        validated_at: profile.kyc_validated_at,
+        document_number: profile.kyc_document_number,
+        document_type: profile.kyc_document_type,
+        first_name: profile.kyc_first_name,
+        last_name: profile.kyc_last_name,
+        birth_date: profile.kyc_birth_date,
+        nationality: profile.kyc_nationality,
+        verification_data: verificationData,
+      });
+    } catch (error: any) {
+      logger.error('Error obteniendo estado KYC', error as Error, { userId: user.sub });
+      res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+        error: 'Failed to get KYC status',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
+  })
+);
+
+const WebhookBody = z.object({
+  session_id: z.string(),
+  status: z.string(),
+  verification_result: z
+    .object({
+      overall_status: z.enum(['approved', 'rejected', 'pending']).optional(),
+      document: z
+        .object({
+          type: z.string().optional(),
+          number: z.string().optional(),
+          extracted_data: z
+            .object({
+              first_name: z.string().optional(),
+              last_name: z.string().optional(),
+              birth_date: z.string().optional(),
+              nationality: z.string().optional(),
+            })
+            .optional(),
+        })
+        .optional(),
+      face_match: z
+        .object({
+          result: z.enum(['match', 'no_match', 'failed']).optional(),
+          confidence: z.number().optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+  vendor_data: z.string().optional(),
+});
+
+/**
+ * POST /kyc/webhook
+ * Webhook público para recibir notificaciones de Didit
+ * No requiere autenticación, pero debería validarse la firma del webhook
+ */
+router.post(
+  '/webhook',
+  asyncHandler(async (req, res) => {
+    try {
+      // Validar firma del webhook si está configurada
+      const signature = req.headers['x-didit-signature'] as string;
+      const payload = JSON.stringify(req.body);
+
+      if (!diditService.validateWebhookSignature(payload, signature || '')) {
+        logger.warn('Webhook de Didit con firma inválida', { signature });
+        res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Invalid signature' });
+        return;
+      }
+
+      const parsed = WebhookBody.safeParse(req.body);
+      if (!parsed.success) {
+        logger.warn('Webhook de Didit con formato inválido', {
+          errors: parsed.error.errors,
+        });
+        res.status(StatusCodes.BAD_REQUEST).json({
+          error: 'Invalid webhook payload',
+          details: parsed.error.flatten(),
+        });
+        return;
+      }
+
+      const { session_id, status, verification_result, vendor_data } = parsed.data;
+
+      if (!vendor_data) {
+        logger.warn('Webhook de Didit sin vendor_data', { session_id });
+        res.status(StatusCodes.BAD_REQUEST).json({ error: 'Missing vendor_data' });
+        return;
+      }
+
+      const userId = vendor_data;
+      const admin = createAdminClient();
+
+      // Verificar que la sesión pertenece al usuario
+      const { data: profile } = await admin
+        .from('profiles')
+        .select('id, kyc_didit_session_id')
+        .eq('id', userId)
+        .eq('kyc_didit_session_id', session_id)
+        .maybeSingle();
+
+      if (!profile) {
+        logger.warn('Webhook de Didit para sesión no encontrada', {
+          session_id,
+          userId,
+        });
+        res.status(StatusCodes.NOT_FOUND).json({ error: 'Session not found' });
+        return;
+      }
+
+      // Mapear estado de Didit a nuestro formato
+      const kycStatus: KYCStatus = diditService.mapDiditStatusToKYCStatus(
+        status,
+        verification_result?.overall_status
+      );
+
+      // Preparar datos de actualización
+      const updateData: any = {
+        kyc_status: kycStatus,
+        updated_at: new Date().toISOString(),
+      };
+
+      // Si fue aprobado, guardar datos extraídos
+      if (kycStatus === 'approved' && verification_result) {
+        const doc = verification_result.document;
+        const extracted = doc?.extracted_data;
+
+        updateData.kyc_validated_at = new Date().toISOString();
+        if (doc?.type) updateData.kyc_document_type = doc.type;
+        if (doc?.number) updateData.kyc_document_number = doc.number;
+        if (extracted?.first_name) updateData.kyc_first_name = extracted.first_name;
+        if (extracted?.last_name) updateData.kyc_last_name = extracted.last_name;
+        if (extracted?.birth_date) updateData.kyc_birth_date = extracted.birth_date;
+        if (extracted?.nationality) updateData.kyc_nationality = extracted.nationality;
+      }
+
+      // Actualizar perfil
+      const { error: updateError } = await admin
+        .from('profiles')
+        .update(updateData)
+        .eq('id', userId);
+
+      if (updateError) {
+        logger.error('Error actualizando perfil desde webhook', updateError as Error, {
+          userId,
+          session_id,
+        });
+        throw new Error('Failed to update profile from webhook');
+      }
+
+      logger.info('Perfil actualizado desde webhook de Didit', {
+        userId,
+        session_id,
+        kycStatus,
+      });
+
+      res.status(StatusCodes.OK).json({ success: true });
+    } catch (error: any) {
+      logger.error('Error procesando webhook de Didit', error as Error);
+      res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+        error: 'Failed to process webhook',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
+  })
+);
+
+export const kycRouter = router;
