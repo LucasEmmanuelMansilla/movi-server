@@ -30,7 +30,7 @@ router.post(
       // Verificar que el usuario sea driver (business no requiere KYC)
       const { data: profile } = await admin
         .from('profiles')
-        .select('role, kyc_status, email')
+        .select('role, kyc_status, email, kyc_didit_session_id')
         .eq('id', user.sub)
         .maybeSingle();
 
@@ -53,6 +53,25 @@ router.post(
           status: 'approved',
         });
         return;
+      }
+
+      // Si ya tiene una sesión en progreso, intentar recuperarla o verificarla
+      if (profile.kyc_didit_session_id && profile.kyc_status === 'in_progress') {
+        try {
+          const diditData = await diditService.getVerificationStatus(profile.kyc_didit_session_id);
+          
+          // Si la sesión no ha fallado ni expirado, podemos reusarla
+          if (diditData.status !== 'failed' && diditData.status !== 'expired') {
+             res.status(StatusCodes.OK).json({
+                session_id: profile.kyc_didit_session_id,
+                verification_url: (diditData as any).url || `https://verification.didit.me/v2/session/${profile.kyc_didit_session_id}`, // Reconstruir si no viene
+                status: 'in_progress',
+             });
+             return;
+          }
+        } catch (e) {
+          logger.warn('No se pudo recuperar sesión existente, creando nueva', { userId: user.sub });
+        }
       }
 
       // Crear sesión en Didit
@@ -239,34 +258,85 @@ const WebhookBody = z.object({
 router.get(
   '/webhook',
   asyncHandler(async (req, res) => {
-    const { status, verificationSessionId } = req.query;
+    const { status, vendor_data, verificationSessionId } = req.query;
 
     logger.info('Usuario redirigido desde Didit', {
       status,
+      vendor_data,
       verificationSessionId,
     });
 
-    // Devolver una página HTML simple que la app puede detectar
+    // Devolver una página HTML que notifica a la app
     res.send(`
       <!DOCTYPE html>
       <html>
         <head>
-          <title>Verificación Finalizada</title>
+          <title>Verificación en Proceso</title>
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <style>
-            body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; padding: 20px; }
-            h1 { color: #2ecc71; }
-            p { color: #666; }
+            body { 
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+              display: flex; 
+              flex-direction: column; 
+              align-items: center; 
+              justify-content: center; 
+              height: 100vh; 
+              margin: 0; 
+              text-align: center; 
+              padding: 20px;
+              background-color: #f8f9fa;
+            }
+            .container {
+              background: white;
+              padding: 30px;
+              border-radius: 16px;
+              box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+              max-width: 300px;
+            }
+            h1 { color: #2ecc71; font-size: 24px; margin-bottom: 10px; }
+            p { color: #6c757d; font-size: 16px; line-height: 1.5; }
+            .loader {
+              border: 4px solid #f3f3f3;
+              border-top: 4px solid #2ecc71;
+              border-radius: 50%;
+              width: 40px;
+              height: 40px;
+              animation: spin 1s linear infinite;
+              margin: 20px auto;
+            }
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
           </style>
         </head>
         <body>
-          <h1>¡Verificación enviada!</h1>
-          <p>Estamos procesando tus datos. Ya puedes cerrar esta ventana o esperar a ser redirigido.</p>
+          <div class="container">
+            <h1>¡Pasos completados!</h1>
+            <div class="loader"></div>
+            <p>Estamos validando tus fotos. Serás redirigido automáticamente en unos segundos.</p>
+          </div>
           <script>
-            // Notificar al WebView de React Native si es posible
-            if (window.ReactNativeWebView) {
-              window.ReactNativeWebView.postMessage('verification_completed');
+            // Notificar al WebView de React Native inmediatamente
+            function notifyApp() {
+              if (window.ReactNativeWebView) {
+                window.ReactNativeWebView.postMessage(JSON.stringify({
+                  type: 'KYC_COMPLETED',
+                  status: '${status || 'completed'}',
+                  userId: '${vendor_data || ''}'
+                }));
+              }
             }
+
+            // Reintentar notificar por si el WebView no está listo
+            notifyApp();
+            setTimeout(notifyApp, 500);
+            setTimeout(notifyApp, 2000);
+            
+            // Si después de 5 segundos no pasó nada, intentar cerrar
+            setTimeout(function() {
+              window.close();
+            }, 5000);
           </script>
         </body>
       </html>

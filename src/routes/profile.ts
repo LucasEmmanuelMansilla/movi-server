@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { createAdminClient } from '../lib/supabase';
 import { StatusCodes } from 'http-status-codes';
 import asyncHandler from 'express-async-handler';
+import { logger } from '../utils/logger';
 import {
   fullNameSchema,
   phoneSchema,
@@ -120,6 +121,29 @@ router.get('/me', asyncHandler(async (req, res) => {
       mp_status: (data as Record<string, any>).mp_status || null,
       mp_token_expires_at: (data as Record<string, any>).mp_token_expires_at || null,
     };
+
+    // Si el KYC está en progreso, intentar actualizarlo antes de responder
+    if (response.kyc_status === 'in_progress' && (data as any).kyc_didit_session_id) {
+       try {
+         const { diditService } = require('../services/didit.service');
+         const diditData = await diditService.getVerificationStatus((data as any).kyc_didit_session_id);
+         const currentStatus = diditService.mapDiditStatusToKYCStatus(
+            diditData.status,
+            diditData.verification_result?.overall_status
+          );
+          
+          if (currentStatus !== response.kyc_status) {
+             response.kyc_status = currentStatus;
+             // Actualizar en DB de forma asíncrona para no bloquear
+             admin.from('profiles').update({ 
+               kyc_status: currentStatus,
+               updated_at: new Date().toISOString()
+             }).eq('id', user.sub).then();
+          }
+       } catch (e) {
+         logger.warn('Error refrescando KYC en profile/me', { userId: user.sub });
+       }
+    }
 
     res.json(response);
   } catch (error) {

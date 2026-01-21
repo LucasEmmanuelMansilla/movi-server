@@ -65,6 +65,7 @@ export class DiditService {
           workflow_id: workflowId || this.defaultWorkflowId,
           vendor_data: userId,
           callback: `${env.API_URL}/kyc/webhook`,
+          redirect_url: `${env.API_URL}/kyc/webhook?status=completed&vendor_data=${userId}`,
           contact_details: email ? { email } : undefined,
           metadata: {
             user_id: userId,
