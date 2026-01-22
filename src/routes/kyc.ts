@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import express from 'express';
 import { z } from 'zod';
 import { createAdminClient } from '../lib/supabase';
 import { StatusCodes } from 'http-status-codes';
@@ -64,7 +65,7 @@ router.post(
           if (diditData.status !== 'failed' && diditData.status !== 'expired') {
              res.status(StatusCodes.OK).json({
                 session_id: profile.kyc_didit_session_id,
-                verification_url: (diditData as any).url || `https://verification.didit.me/v2/session/${profile.kyc_didit_session_id}`, // Reconstruir si no viene
+                verification_url: (diditData as any).url || `https://verification.didit.me/v3/session/${profile.kyc_didit_session_id}`, // Reconstruir si no viene (usar v3)
                 status: 'in_progress',
              });
              return;
@@ -221,6 +222,7 @@ router.get(
 );
 
 const WebhookBody = z.object({
+  event_type: z.string().optional(), // Según la guía, puede venir event_type: 'session.completed'
   session_id: z.string(),
   status: z.string(),
   verification_result: z
@@ -344,26 +346,60 @@ router.get(
   })
 );
 
+// Router separado para el webhook que necesita body crudo
+// Este router se registra ANTES del middleware express.json() en index.ts
+const webhookRouter = Router();
+
 /**
  * POST /kyc/webhook
  * Webhook público para recibir notificaciones de Didit
- * No requiere autenticación, pero debería validarse la firma del webhook
+ * No requiere autenticación, pero debe validarse la firma del webhook
+ * 
+ * IMPORTANTE: Este endpoint debe validar la firma HMAC SHA256 según la guía de Didit.
+ * 
+ * La validación se hace con: HMAC SHA256(timestamp + payload) usando WEBHOOK_SECRET_KEY
+ * 
+ * NOTA: Este router se registra ANTES del middleware express.json() en index.ts
+ * para poder obtener el body crudo y validar correctamente la firma.
  */
-router.post(
+webhookRouter.post(
   '/webhook',
+  // Middleware para obtener body crudo (necesario para validar signature)
+  express.raw({ type: 'application/json' }),
   asyncHandler(async (req, res) => {
     try {
-      // Validar firma del webhook si está configurada
-      const signature = req.headers['x-didit-signature'] as string;
-      const payload = JSON.stringify(req.body);
+      // Obtener headers según la guía: X-Signature y X-Timestamp
+      const signature = (req.headers['x-signature'] || req.headers['x-didit-signature']) as string;
+      const timestamp = req.headers['x-timestamp'] as string;
+      
+      // El body viene como Buffer cuando usamos express.raw()
+      const payload = req.body instanceof Buffer 
+        ? req.body.toString('utf8')
+        : typeof req.body === 'string'
+        ? req.body
+        : JSON.stringify(req.body);
 
-      if (!diditService.validateWebhookSignature(payload, signature || '')) {
-        logger.warn('Webhook de Didit con firma inválida', { signature });
-        res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Invalid signature' });
+      // Validar firma del webhook según la guía
+      if (!diditService.validateWebhookSignature(payload, signature || '', timestamp || '')) {
+        logger.warn('Webhook de Didit con firma inválida', { 
+          hasSignature: !!signature,
+          hasTimestamp: !!timestamp,
+        });
+        res.status(StatusCodes.FORBIDDEN).json({ error: 'Firma inválida' });
         return;
       }
 
-      const parsed = WebhookBody.safeParse(req.body);
+      // Parsear el payload JSON
+      let event;
+      try {
+        event = JSON.parse(payload);
+      } catch (parseError) {
+        logger.warn('Webhook de Didit con payload JSON inválido', { payload: payload.substring(0, 100) });
+        res.status(StatusCodes.BAD_REQUEST).json({ error: 'Invalid JSON payload' });
+        return;
+      }
+
+      const parsed = WebhookBody.safeParse(event);
       if (!parsed.success) {
         logger.warn('Webhook de Didit con formato inválido', {
           errors: parsed.error.errors,
@@ -375,10 +411,14 @@ router.post(
         return;
       }
 
-      const { session_id, status, verification_result, vendor_data } = parsed.data;
+      const { event_type, session_id, status, verification_result, vendor_data } = parsed.data;
+
+      // Según la guía, procesar evento de finalización cuando event_type === 'session.completed'
+      // También procesamos si viene status === 'completed'
+      const isCompleted = event_type === 'session.completed' || status === 'completed' || status === 'finished';
 
       if (!vendor_data) {
-        logger.warn('Webhook de Didit sin vendor_data', { session_id });
+        logger.warn('Webhook de Didit sin vendor_data', { session_id, event_type });
         res.status(StatusCodes.BAD_REQUEST).json({ error: 'Missing vendor_data' });
         return;
       }
@@ -398,6 +438,7 @@ router.post(
         logger.warn('Webhook de Didit para sesión no encontrada', {
           session_id,
           userId,
+          event_type,
         });
         res.status(StatusCodes.NOT_FOUND).json({ error: 'Session not found' });
         return;
@@ -408,6 +449,14 @@ router.post(
         status,
         verification_result?.overall_status
       );
+
+      logger.info('Webhook de Didit recibido', {
+        event_type,
+        session_id,
+        status,
+        userId,
+        kycStatus,
+      });
 
       // Preparar datos de actualización
       const updateData: any = {
@@ -461,3 +510,4 @@ router.post(
 );
 
 export const kycRouter = router;
+export const kycWebhookRouter = webhookRouter;

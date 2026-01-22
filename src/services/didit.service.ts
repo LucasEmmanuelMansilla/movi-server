@@ -1,5 +1,6 @@
 import { env } from '../env';
 import { logger } from '../utils/logger';
+import * as crypto from 'crypto';
 
 export type KYCStatus = 'pending' | 'in_progress' | 'approved' | 'rejected';
 
@@ -55,7 +56,11 @@ export class DiditService {
     workflowId?: string
   ): Promise<DiditSessionResponse> {
     try {
-      const response = await fetch(`${this.apiUrl}/v2/session/`, {
+      // Usar esquema de URL personalizado para React Native según la guía
+      // El callback permite volver a la app al finalizar la verificación
+      const callbackUrl = 'movi://didit/callback';
+      
+      const response = await fetch(`${this.apiUrl}/v3/session/`, {
         method: 'POST',
         headers: {
           'X-Api-Key': this.apiKey,
@@ -64,8 +69,7 @@ export class DiditService {
         body: JSON.stringify({
           workflow_id: workflowId || this.defaultWorkflowId,
           vendor_data: userId,
-          callback: `${env.API_URL}/kyc/webhook`,
-          redirect_url: `${env.API_URL}/kyc/webhook?status=completed&vendor_data=${userId}`,
+          callback: callbackUrl, // URL custom para volver a la app
           contact_details: email ? { email } : undefined,
           metadata: {
             user_id: userId,
@@ -109,7 +113,8 @@ export class DiditService {
    */
   async getVerificationStatus(sessionId: string): Promise<DiditSessionData> {
     try {
-      const response = await fetch(`${this.apiUrl}/v2/session/${sessionId}`, {
+      // Usar v3 según la guía de integración
+      const response = await fetch(`${this.apiUrl}/v3/session/${sessionId}`, {
         method: 'GET',
         headers: {
           'X-Api-Key': this.apiKey,
@@ -190,28 +195,54 @@ export class DiditService {
   }
 
   /**
-   * Valida la firma del webhook de Didit (si está configurado)
-   * @param payload Payload del webhook
-   * @param signature Firma recibida
+   * Valida la firma del webhook de Didit según la guía oficial
+   * La firma se calcula como: HMAC SHA256(timestamp + payload) usando WEBHOOK_SECRET_KEY
+   * @param payload Payload del webhook (body crudo como string)
+   * @param signature Firma recibida en header X-Signature
+   * @param timestamp Timestamp recibido en header X-Timestamp
    * @returns true si la firma es válida
    */
-  validateWebhookSignature(payload: string, signature: string): boolean {
-    // La validación de webhook puede implementarse más adelante
-    // Por ahora, validamos que exista la firma si está configurado el secreto
+  validateWebhookSignature(
+    payload: string,
+    signature: string,
+    timestamp: string
+  ): boolean {
     if (!env.DIDIT_WEBHOOK_SECRET) {
       // Si no hay secreto configurado, permitir (no recomendado para producción)
       logger.warn('DIDIT_WEBHOOK_SECRET no configurado, saltando validación de webhook');
       return true;
     }
 
-    // Validar que exista una firma
-    if (!signature) {
+    // Validar que existan firma y timestamp
+    if (!signature || !timestamp) {
+      logger.warn('Webhook de Didit sin firma o timestamp', { signature: !!signature, timestamp: !!timestamp });
       return false;
     }
 
-    // TODO: Implementar validación real de firma según la documentación de Didit
-    // cuando esté disponible
-    return true;
+    try {
+      // Calcular HMAC SHA256: signature = HMAC_SECRET_KEY(timestamp + payload)
+      const hmac = crypto.createHmac('sha256', env.DIDIT_WEBHOOK_SECRET);
+      hmac.update(timestamp + payload);
+      const digest = hmac.digest('hex');
+
+      // Comparar firmas de forma segura (timing-safe)
+      const isValid = crypto.timingSafeEqual(
+        Buffer.from(signature),
+        Buffer.from(digest)
+      );
+
+      if (!isValid) {
+        logger.warn('Firma de webhook de Didit inválida', {
+          expected: digest.substring(0, 8) + '...',
+          received: signature.substring(0, 8) + '...',
+        });
+      }
+
+      return isValid;
+    } catch (error: any) {
+      logger.error('Error validando firma de webhook de Didit', error as Error);
+      return false;
+    }
   }
 }
 

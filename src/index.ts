@@ -14,7 +14,7 @@ import { paymentRouter } from './routes/payments';
 import { driverTransfersRouter } from './routes/driver-transfers';
 // import { mercadoPagoOAuthRouter } from './routes/mercadopago-oauth'; // Deshabilitado - Marketplace removido
 import { withdrawalRequestsRouter } from './routes/withdrawal-requests';
-import { kycRouter } from './routes/kyc';
+import { kycRouter, kycWebhookRouter } from './routes/kyc';
 import { authMiddleware } from './middleware/auth';
 import { apiRateLimiter, authRateLimiter } from './middleware/rateLimiter';
 import { logger } from './utils/logger';
@@ -44,7 +44,11 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
 }));
 
-// Body parsing
+// IMPORTANTE: Registrar el webhook de Didit ANTES del middleware JSON
+// para poder obtener el body crudo y validar correctamente la firma HMAC
+app.use('/kyc', kycWebhookRouter);
+
+// Body parsing (después del webhook para que no interfiera)
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 

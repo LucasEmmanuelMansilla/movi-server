@@ -5,7 +5,6 @@ import { z } from 'zod'
 const envSchema = z.object({
   PORT: z.string().default("4000"),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  JWT_SECRET: z.string().min(10, "JWT_SECRET debe tener al menos 10 caracteres").optional(),
 
   SUPABASE_URL: z.string().url("SUPABASE_URL debe ser una URL válida"),
   SUPABASE_ANON_KEY: z.string().min(1, "Falta SUPABASE_ANON_KEY"),
@@ -13,7 +12,6 @@ const envSchema = z.object({
   SUPABASE_JWT_SECRET: z.string().min(1, "Falta SUPABASE_JWT_SECRET").optional(),
 
   MERCADOPAGO_ACCESS_TOKEN: z.string().min(1, "MERCADOPAGO_ACCESS_TOKEN es requerido"),
-  MERCADOPAGO_PUBLIC_KEY: z.string().min(1, "MERCADOPAGO_PUBLIC_KEY es requerido"),
   COMMISSION_PERCENTAGE: z.string().default('10'),
   
   MP_APPLICATION_ID: z.string().optional(),
