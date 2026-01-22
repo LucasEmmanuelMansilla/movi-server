@@ -157,38 +157,89 @@ export class DiditService {
     diditStatus: string,
     overallStatus?: string
   ): KYCStatus {
-    const status = diditStatus.toLowerCase();
-    const overall = overallStatus?.toLowerCase();
+    const status = diditStatus?.toLowerCase() || '';
+    const overall = overallStatus?.toLowerCase() || '';
 
-    if ((status === 'completed' || status === 'finished') && overall === 'approved') {
+    // Estados aprobados: si overall_status es 'approved', siempre es aprobado
+    // También considerar estados como 'active', 'verified', 'success' como aprobados
+    if (overall === 'approved') {
+      logger.info('Estado mapeado a approved por overall_status', {
+        diditStatus: status,
+        overallStatus: overall,
+      });
       return 'approved';
     }
+
+    // Estados que indican verificación exitosa/aprobada
     if (
-      (status === 'completed' || status === 'finished') &&
-      overall === 'rejected'
+      status === 'active' ||
+      status === 'verified' ||
+      status === 'success' ||
+      status === 'approved' ||
+      (status === 'completed' && overall === 'approved') ||
+      (status === 'finished' && overall === 'approved')
     ) {
-      return 'rejected';
+      logger.info('Estado mapeado a approved', {
+        diditStatus: status,
+        overallStatus: overall,
+      });
+      return 'approved';
     }
+
+    // Estados rechazados
     if (
       status === 'failed' ||
       status === 'expired' ||
-      overall === 'rejected'
+      status === 'rejected' ||
+      status === 'declined' ||
+      overall === 'rejected' ||
+      (status === 'completed' && overall === 'rejected') ||
+      (status === 'finished' && overall === 'rejected')
     ) {
+      logger.info('Estado mapeado a rejected', {
+        diditStatus: status,
+        overallStatus: overall,
+      });
       return 'rejected';
     }
+
+    // Estados en progreso o en revisión
     if (
       status === 'pending' ||
       status === 'in_progress' ||
+      status === 'inprogress' ||
       status === 'in review' ||
       status === 'in_review' ||
-      overall === 'pending'
+      status === 'reviewing' ||
+      status === 'processing' ||
+      status === 'submitted' ||
+      overall === 'pending' ||
+      overall === 'in_progress' ||
+      overall === 'inprogress'
     ) {
+      logger.info('Estado mapeado a in_progress', {
+        diditStatus: status,
+        overallStatus: overall,
+      });
       return 'in_progress';
     }
-    
-    // Si terminó pero aún no hay resultado final, lo tratamos como en progreso
+
+    // Si terminó (completed/finished) pero aún no hay resultado final definitivo,
+    // lo tratamos como en progreso (puede estar esperando revisión manual)
     if (status === 'completed' || status === 'finished') {
+      logger.info('Estado completed/finished sin overall_status definitivo, mapeado a in_progress', {
+        diditStatus: status,
+        overallStatus: overall,
+      });
       return 'in_progress';
+    }
+
+    // Estado desconocido o no reconocido - loguear para debugging
+    if (status) {
+      logger.warn('Estado de Didit no reconocido, mapeado a pending', {
+        diditStatus: status,
+        overallStatus: overall,
+      });
     }
 
     return 'pending';

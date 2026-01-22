@@ -153,28 +153,55 @@ router.get(
       }
 
       // Si hay una sesión activa, verificar estado en Didit
+      // Consultar Didit siempre que haya session_id, excepto si ya está approved
+      // Esto permite sincronizar estados que pueden haber cambiado en Didit
       let currentStatus: KYCStatus = (profile.kyc_status as KYCStatus) || 'pending';
       let verificationData = null;
 
-      if (profile.kyc_didit_session_id && profile.kyc_status === 'in_progress') {
+      // Consultar Didit si hay session_id y el estado no es 'approved'
+      // Esto incluye casos donde el estado es null, 'pending', 'in_progress', o 'rejected'
+      if (profile.kyc_didit_session_id && profile.kyc_status !== 'approved') {
         try {
+          logger.info('Consultando estado en Didit para sincronización', {
+            userId: user.sub,
+            sessionId: profile.kyc_didit_session_id,
+            currentStatus: profile.kyc_status,
+          });
+
           const diditData = await diditService.getVerificationStatus(
             profile.kyc_didit_session_id
           );
-          currentStatus = diditService.mapDiditStatusToKYCStatus(
+          
+          const diditStatus = diditService.mapDiditStatusToKYCStatus(
             diditData.status,
             diditData.verification_result?.overall_status
           );
 
+          logger.info('Estado recibido de Didit', {
+            userId: user.sub,
+            sessionId: profile.kyc_didit_session_id,
+            diditStatus: diditData.status,
+            diditOverallStatus: diditData.verification_result?.overall_status,
+            mappedStatus: diditStatus,
+            currentDbStatus: profile.kyc_status,
+          });
+
           // Si cambió el estado, actualizar en la base de datos
-          if (currentStatus !== profile.kyc_status) {
+          if (diditStatus !== profile.kyc_status) {
+            logger.info('Estado KYC cambió, actualizando en DB', {
+              userId: user.sub,
+              sessionId: profile.kyc_didit_session_id,
+              oldStatus: profile.kyc_status,
+              newStatus: diditStatus,
+            });
+
             const updateData: any = {
-              kyc_status: currentStatus,
+              kyc_status: diditStatus,
               updated_at: new Date().toISOString(),
             };
 
             // Si fue aprobado, guardar datos extraídos
-            if (currentStatus === 'approved' && diditData.verification_result) {
+            if (diditStatus === 'approved' && diditData.verification_result) {
               const doc = diditData.verification_result.document;
               const extracted = doc?.extracted_data;
 
@@ -185,18 +212,43 @@ router.get(
               if (extracted?.last_name) updateData.kyc_last_name = extracted.last_name;
               if (extracted?.birth_date) updateData.kyc_birth_date = extracted.birth_date;
               if (extracted?.nationality) updateData.kyc_nationality = extracted.nationality;
+
+              logger.info('KYC aprobado, guardando datos extraídos', {
+                userId: user.sub,
+                sessionId: profile.kyc_didit_session_id,
+                documentType: doc?.type,
+                documentNumber: doc?.number,
+              });
             }
 
             await admin.from('profiles').update(updateData).eq('id', user.sub);
+            currentStatus = diditStatus;
+          } else {
+            // Aunque no cambió, usar el estado de Didit para asegurar consistencia
+            currentStatus = diditStatus;
+            logger.info('Estado KYC sin cambios, usando estado de Didit', {
+              userId: user.sub,
+              sessionId: profile.kyc_didit_session_id,
+              status: diditStatus,
+            });
           }
 
           verificationData = diditData.verification_result;
         } catch (error: any) {
           logger.error('Error consultando estado en Didit', error as Error, {
             sessionId: profile.kyc_didit_session_id,
+            userId: user.sub,
+            currentStatus: profile.kyc_status,
           });
           // Continuar con el estado guardado en DB si falla la consulta
         }
+      } else if (profile.kyc_didit_session_id && profile.kyc_status === 'approved') {
+        // Si ya está approved, no consultar Didit para evitar llamadas innecesarias
+        // pero loguear para debugging
+        logger.info('KYC ya está aprobado, omitiendo consulta a Didit', {
+          userId: user.sub,
+          sessionId: profile.kyc_didit_session_id,
+        });
       }
 
       res.status(StatusCodes.OK).json({
@@ -413,9 +465,33 @@ webhookRouter.post(
 
       const { event_type, session_id, status, verification_result, vendor_data } = parsed.data;
 
-      // Según la guía, procesar evento de finalización cuando event_type === 'session.completed'
-      // También procesamos si viene status === 'completed'
-      const isCompleted = event_type === 'session.completed' || status === 'completed' || status === 'finished';
+      // Procesar todos los eventos relevantes, no solo session.completed
+      // Eventos que debemos procesar:
+      // - session.completed: sesión completada
+      // - session.updated: sesión actualizada (cambios de estado)
+      // - session.failed: sesión fallida
+      // - session.expired: sesión expirada
+      // - Cualquier evento con status que indique un cambio
+      const relevantEvents = [
+        'session.completed',
+        'session.updated',
+        'session.failed',
+        'session.expired',
+        'verification.completed',
+        'verification.updated',
+      ];
+      
+      const isRelevantEvent = 
+        event_type && relevantEvents.includes(event_type) ||
+        status && (status === 'completed' || status === 'finished' || status === 'failed' || status === 'expired');
+
+      logger.info('Webhook de Didit recibido', {
+        event_type,
+        session_id,
+        status,
+        isRelevantEvent,
+        hasVerificationResult: !!verification_result,
+      });
 
       if (!vendor_data) {
         logger.warn('Webhook de Didit sin vendor_data', { session_id, event_type });
@@ -429,7 +505,7 @@ webhookRouter.post(
       // Verificar que la sesión pertenece al usuario
       const { data: profile } = await admin
         .from('profiles')
-        .select('id, kyc_didit_session_id')
+        .select('id, kyc_didit_session_id, kyc_status')
         .eq('id', userId)
         .eq('kyc_didit_session_id', session_id)
         .maybeSingle();
@@ -450,13 +526,35 @@ webhookRouter.post(
         verification_result?.overall_status
       );
 
-      logger.info('Webhook de Didit recibido', {
+      logger.info('Webhook de Didit procesando', {
         event_type,
         session_id,
         status,
+        diditOverallStatus: verification_result?.overall_status,
+        mappedKycStatus: kycStatus,
+        currentDbStatus: profile.kyc_status,
         userId,
-        kycStatus,
       });
+
+      // Procesar el webhook y actualizar el estado
+      // Actualizar siempre que haya un cambio de estado, no solo en eventos de completado
+      const shouldUpdate = 
+        kycStatus !== profile.kyc_status || // El estado cambió
+        isRelevantEvent || // Es un evento relevante
+        verification_result; // Hay datos de verificación
+
+      if (!shouldUpdate) {
+        logger.info('Webhook de Didit recibido pero no requiere actualización', {
+          userId,
+          session_id,
+          event_type,
+          status,
+          currentStatus: profile.kyc_status,
+          mappedStatus: kycStatus,
+        });
+        res.status(StatusCodes.OK).json({ success: true, message: 'No update needed' });
+        return;
+      }
 
       // Preparar datos de actualización
       const updateData: any = {
@@ -476,6 +574,13 @@ webhookRouter.post(
         if (extracted?.last_name) updateData.kyc_last_name = extracted.last_name;
         if (extracted?.birth_date) updateData.kyc_birth_date = extracted.birth_date;
         if (extracted?.nationality) updateData.kyc_nationality = extracted.nationality;
+
+        logger.info('KYC aprobado desde webhook, guardando datos extraídos', {
+          userId,
+          session_id,
+          documentType: doc?.type,
+          documentNumber: doc?.number,
+        });
       }
 
       // Actualizar perfil
@@ -488,6 +593,8 @@ webhookRouter.post(
         logger.error('Error actualizando perfil desde webhook', updateError as Error, {
           userId,
           session_id,
+          event_type,
+          kycStatus,
         });
         throw new Error('Failed to update profile from webhook');
       }
@@ -495,7 +602,10 @@ webhookRouter.post(
       logger.info('Perfil actualizado desde webhook de Didit', {
         userId,
         session_id,
-        kycStatus,
+        event_type,
+        oldStatus: profile.kyc_status,
+        newStatus: kycStatus,
+        hasVerificationResult: !!verification_result,
       });
 
       res.status(StatusCodes.OK).json({ success: true });
