@@ -56,22 +56,87 @@ router.post(
         return;
       }
 
-      // Si ya tiene una sesión en progreso, intentar recuperarla o verificarla
-      if (profile.kyc_didit_session_id && profile.kyc_status === 'in_progress') {
+      // Si ya tiene una sesión, intentar recuperarla o verificarla en Didit
+      // Hacer esto incluso si el estado es null o pending para detectar si ya se verificó
+      if (profile.kyc_didit_session_id) {
         try {
+          logger.info('Verificando sesión existente en Didit antes de crear nueva', {
+            userId: user.sub,
+            sessionId: profile.kyc_didit_session_id,
+          });
+
           const diditData = await diditService.getVerificationStatus(profile.kyc_didit_session_id);
           
-          // Si la sesión no ha fallado ni expirado, podemos reusarla
-          if (diditData.status !== 'failed' && diditData.status !== 'expired') {
+          logger.info('Respuesta completa de Didit para verificación previa', {
+            userId: user.sub,
+            sessionId: profile.kyc_didit_session_id,
+            diditStatus: diditData.status,
+            decisionStatus: diditData.decision?.status,
+            overallStatus: diditData.verification_result?.overall_status,
+          });
+
+          const currentStatus = diditService.mapDiditStatusToKYCStatus(
+            diditData.status,
+            diditData.verification_result?.overall_status,
+            diditData.decision?.status
+          );
+
+          logger.info('Estado mapeado en init', {
+            userId: user.sub,
+            mappedStatus: currentStatus,
+          });
+
+          // Si ya está aprobado en Didit, actualizar DB y retornar
+          if (currentStatus === 'approved') {
+            logger.info('Usuario ya está aprobado en Didit, actualizando perfil', { userId: user.sub });
+            
+            const updateData: any = {
+              kyc_status: 'approved',
+              kyc_validated_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            };
+
+            const decision = diditData.decision || diditData.verification_result;
+            const doc = decision?.document;
+            const extracted = doc?.extracted_data;
+
+            if (doc?.type) updateData.kyc_document_type = doc.type;
+            if (doc?.number) updateData.kyc_document_number = doc.number;
+            if (extracted?.first_name) updateData.kyc_first_name = extracted.first_name;
+            if (extracted?.last_name) updateData.kyc_last_name = extracted.last_name;
+            if (extracted?.birth_date) updateData.kyc_birth_date = extracted.birth_date;
+            if (extracted?.nationality) updateData.kyc_nationality = extracted.nationality;
+
+            await admin.from('profiles').update(updateData).eq('id', user.sub);
+
+            res.status(StatusCodes.OK).json({
+              message: 'KYC already approved',
+              status: 'approved',
+            });
+            return;
+          }
+
+          // Si la sesión está en progreso o revisión, reusarla
+          if (currentStatus === 'in_progress') {
+             logger.info('Reusando sesión existente en progreso', { userId: user.sub });
              res.status(StatusCodes.OK).json({
                 session_id: profile.kyc_didit_session_id,
-                verification_url: (diditData as any).url || `https://verification.didit.me/v3/session/${profile.kyc_didit_session_id}`, // Reconstruir si no viene (usar v3)
+                verification_url: (diditData as any).url || `https://verification.didit.me/v3/session/${profile.kyc_didit_session_id}`,
                 status: 'in_progress',
              });
              return;
           }
+          
+          // Si falló o expiró, permitimos crear una nueva más adelante
+          logger.info('Sesión existente fallida o expirada, se creará una nueva', { 
+            userId: user.sub, 
+            status: currentStatus 
+          });
         } catch (e) {
-          logger.warn('No se pudo recuperar sesión existente, creando nueva', { userId: user.sub });
+          logger.warn('No se pudo verificar sesión existente, se intentará crear una nueva', { 
+            userId: user.sub,
+            error: e instanceof Error ? e.message : String(e)
+          });
         }
       }
 
@@ -174,7 +239,8 @@ router.get(
           
           const diditStatus = diditService.mapDiditStatusToKYCStatus(
             diditData.status,
-            diditData.verification_result?.overall_status
+            diditData.verification_result?.overall_status,
+            diditData.decision?.status
           );
 
           logger.info('Estado recibido de Didit', {
@@ -182,6 +248,7 @@ router.get(
             sessionId: profile.kyc_didit_session_id,
             diditStatus: diditData.status,
             diditOverallStatus: diditData.verification_result?.overall_status,
+            diditDecisionStatus: diditData.decision?.status,
             mappedStatus: diditStatus,
             currentDbStatus: profile.kyc_status,
           });
@@ -201,8 +268,9 @@ router.get(
             };
 
             // Si fue aprobado, guardar datos extraídos
-            if (diditStatus === 'approved' && diditData.verification_result) {
-              const doc = diditData.verification_result.document;
+            if (diditStatus === 'approved') {
+              const decision = diditData.decision || diditData.verification_result;
+              const doc = decision?.document;
               const extracted = doc?.extracted_data;
 
               updateData.kyc_validated_at = new Date().toISOString();
@@ -226,14 +294,9 @@ router.get(
           } else {
             // Aunque no cambió, usar el estado de Didit para asegurar consistencia
             currentStatus = diditStatus;
-            logger.info('Estado KYC sin cambios, usando estado de Didit', {
-              userId: user.sub,
-              sessionId: profile.kyc_didit_session_id,
-              status: diditStatus,
-            });
           }
 
-          verificationData = diditData.verification_result;
+          verificationData = diditData.decision || diditData.verification_result;
         } catch (error: any) {
           logger.error('Error consultando estado en Didit', error as Error, {
             sessionId: profile.kyc_didit_session_id,

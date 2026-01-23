@@ -12,8 +12,13 @@ export interface DiditSessionResponse {
 
 export interface DiditSessionData {
   session_id: string;
-  status: 'pending' | 'completed' | 'expired' | 'failed';
-  verification_result?: {
+  status: string; // 'pending', 'completed', 'expired', 'failed', 'Approved', 'Declined', etc.
+  url?: string;
+  vendor_data?: string;
+  workflow_id?: string;
+  metadata?: any;
+  decision?: {
+    status: string; // 'Approved', 'Declined', 'In Review', 'Abandoned', etc.
     document?: {
       type?: string;
       number?: string;
@@ -28,8 +33,8 @@ export interface DiditSessionData {
       result: 'match' | 'no_match' | 'failed';
       confidence?: number;
     };
-    overall_status: 'approved' | 'rejected' | 'pending';
   };
+  verification_result?: any; // Mantener por compatibilidad con v2/webhooks
 }
 
 export class DiditService {
@@ -108,34 +113,66 @@ export class DiditService {
 
   /**
    * Obtiene el estado y datos de una sesión de verificación
+   * Intenta usar el endpoint /decision/ para obtener el resultado real
    * @param sessionId ID de la sesión de Didit
    * @returns Datos completos de la sesión
    */
   async getVerificationStatus(sessionId: string): Promise<DiditSessionData> {
     try {
-      // Usar v3 según la guía de integración
-      const response = await fetch(`${this.apiUrl}/v3/session/${sessionId}`, {
+      // Intentar primero con el endpoint /decision/ que es el que tiene el resultado real
+      const decisionResponse = await fetch(`${this.apiUrl}/v2/session/${sessionId}/decision/`, {
         method: 'GET',
         headers: {
           'X-Api-Key': this.apiKey,
         },
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        logger.error('Error obteniendo estado de sesión Didit', new Error(errorText), {
-          status: response.status,
-          sessionId,
+      if (decisionResponse.ok) {
+        const decisionData = await decisionResponse.json();
+        logger.info('Decisión de Didit obtenida exitosamente', {
+          session_id: sessionId,
+          status: decisionData.status,
+          hasDecision: !!decisionData.decision,
         });
-        throw new Error(`Failed to get Didit session status: ${response.status}`);
+        return decisionData as DiditSessionData;
       }
 
-      const data = await response.json();
-      return data as DiditSessionData;
+      // Si falla /decision/, intentar con /v3/session/ por compatibilidad
+      logger.warn('Fallo al obtener decisión, intentando con endpoint v3 de sesión', {
+        status: decisionResponse.status,
+        sessionId,
+      });
+
+      const sessionResponse = await fetch(`${this.apiUrl}/v3/session/${sessionId}`, {
+        method: 'GET',
+        headers: {
+          'X-Api-Key': this.apiKey,
+        },
+      });
+
+      if (!sessionResponse.ok) {
+        const errorText = await sessionResponse.text();
+        logger.error('Error obteniendo estado de sesión Didit en ambos endpoints', new Error(errorText), {
+          status: sessionResponse.status,
+          sessionId,
+        });
+        throw new Error(`Failed to get Didit session status: ${sessionResponse.status}`);
+      }
+
+      const sessionData = await sessionResponse.json();
+      return sessionData as DiditSessionData;
     } catch (error: any) {
       logger.error('Error en getVerificationStatus', error as Error, { sessionId });
       throw error;
     }
+  }
+
+  /**
+   * Obtiene específicamente la decisión de una sesión
+   * @param sessionId ID de la sesión
+   */
+  async getVerificationDecision(sessionId: string): Promise<DiditSessionData> {
+    return this.getVerificationStatus(sessionId);
   }
 
   /**
@@ -149,40 +186,34 @@ export class DiditService {
 
   /**
    * Convierte el estado de Didit a nuestro formato interno
-   * @param diditStatus Estado de Didit
-   * @param overallStatus Estado general de verificación
+   * @param diditStatus Estado de Didit (puede venir de status o decision.status)
+   * @param overallStatus Estado general de verificación (opcional)
+   * @param decisionStatus Estado del objeto decision (opcional)
    * @returns Estado interno de KYC
    */
   mapDiditStatusToKYCStatus(
     diditStatus: string,
-    overallStatus?: string
+    overallStatus?: string,
+    decisionStatus?: string
   ): KYCStatus {
+    // Normalizar estados a minúsculas para comparar, pero aceptar mayúsculas
     const status = diditStatus?.toLowerCase() || '';
     const overall = overallStatus?.toLowerCase() || '';
+    const decision = decisionStatus?.toLowerCase() || '';
 
-    // Estados aprobados: si overall_status es 'approved', siempre es aprobado
-    // También considerar estados como 'active', 'verified', 'success' como aprobados
-    if (overall === 'approved') {
-      logger.info('Estado mapeado a approved por overall_status', {
-        diditStatus: status,
-        overallStatus: overall,
-      });
+    logger.debug('Mapeando estado de Didit', { status, overall, decision });
+
+    // Estados aprobados: si overall_status o decision.status es 'approved', siempre es aprobado
+    if (overall === 'approved' || decision === 'approved' || status === 'approved' || status === 'verified' || status === 'active') {
       return 'approved';
     }
 
-    // Estados que indican verificación exitosa/aprobada
+    // Casos específicos de Didit que significan éxito
     if (
-      status === 'active' ||
-      status === 'verified' ||
       status === 'success' ||
-      status === 'approved' ||
-      (status === 'completed' && overall === 'approved') ||
-      (status === 'finished' && overall === 'approved')
+      (status === 'completed' && (overall === 'approved' || decision === 'approved')) ||
+      (status === 'finished' && (overall === 'approved' || decision === 'approved'))
     ) {
-      logger.info('Estado mapeado a approved', {
-        diditStatus: status,
-        overallStatus: overall,
-      });
       return 'approved';
     }
 
@@ -193,56 +224,49 @@ export class DiditService {
       status === 'rejected' ||
       status === 'declined' ||
       overall === 'rejected' ||
-      (status === 'completed' && overall === 'rejected') ||
-      (status === 'finished' && overall === 'rejected')
+      decision === 'rejected' ||
+      decision === 'declined' ||
+      (status === 'completed' && (overall === 'rejected' || decision === 'declined')) ||
+      (status === 'finished' && (overall === 'rejected' || decision === 'declined'))
     ) {
-      logger.info('Estado mapeado a rejected', {
-        diditStatus: status,
-        overallStatus: overall,
-      });
       return 'rejected';
     }
 
-    // Estados en progreso o en revisión
+    // Estados en revisión/espera (no abrir WebView automáticamente)
     if (
-      status === 'pending' ||
-      status === 'in_progress' ||
-      status === 'inprogress' ||
       status === 'in review' ||
       status === 'in_review' ||
       status === 'reviewing' ||
       status === 'processing' ||
-      status === 'submitted' ||
-      overall === 'pending' ||
-      overall === 'in_progress' ||
-      overall === 'inprogress'
+      decision === 'in review' ||
+      decision === 'in_review' ||
+      overall === 'in review' ||
+      overall === 'in_review'
     ) {
-      logger.info('Estado mapeado a in_progress', {
-        diditStatus: status,
-        overallStatus: overall,
-      });
       return 'in_progress';
     }
 
-    // Si terminó (completed/finished) pero aún no hay resultado final definitivo,
-    // lo tratamos como en progreso (puede estar esperando revisión manual)
+    // Estados en progreso (usuario aún en el WebView)
+    if (
+      status === 'pending' ||
+      status === 'in_progress' ||
+      status === 'inprogress' ||
+      status === 'submitted' ||
+      status === 'not started' ||
+      status === 'not_started' ||
+      overall === 'pending' ||
+      overall === 'in_progress'
+    ) {
+      return 'in_progress';
+    }
+
+    // Si terminó pero no hay resultado final definitivo
     if (status === 'completed' || status === 'finished') {
-      logger.info('Estado completed/finished sin overall_status definitivo, mapeado a in_progress', {
-        diditStatus: status,
-        overallStatus: overall,
-      });
       return 'in_progress';
     }
 
-    // Estado desconocido o no reconocido - loguear para debugging
-    if (status) {
-      logger.warn('Estado de Didit no reconocido, mapeado a pending', {
-        diditStatus: status,
-        overallStatus: overall,
-      });
-    }
-
-    return 'pending';
+    // Por defecto, si hay algún estado, tratar como en progreso, si no pendiente
+    return status ? 'in_progress' : 'pending';
   }
 
   /**
