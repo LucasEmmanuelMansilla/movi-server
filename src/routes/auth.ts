@@ -149,13 +149,6 @@ router.post('/exchange', asyncHandler(async (req, res) => {
       full_name: full_name ?? prof?.full_name ?? null,
       phone: phone ?? prof?.phone ?? null,
     };
-
-    // Si es un driver nuevo (no tiene perfil previo) y no tiene kyc_status, establecerlo como 'pending'
-    // Si ya existe (prof), mantener su kyc_status actual (puede ser NULL para usuarios existentes)
-    if (finalRole === 'driver' && !prof) {
-      upsertData.kyc_status = 'pending';
-    }
-    // Si es driver existente y kyc_status es NULL, mantenerlo NULL (grandfather clause)
     
     const { error: upsertErr } = await admin.from('profiles').upsert(upsertData);
 
