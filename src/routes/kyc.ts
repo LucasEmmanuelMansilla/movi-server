@@ -47,7 +47,7 @@ router.post(
         return;
       }
 
-      // Si ya está aprobado, no necesita nueva validación
+      // Si ya está aprobado, retornar inmediatamente sin consultar Didit
       if (profile.kyc_status === 'approved') {
         res.status(StatusCodes.OK).json({
           message: 'KYC already approved',
@@ -56,40 +56,18 @@ router.post(
         return;
       }
 
-      // Si ya tiene una sesión, intentar recuperarla o verificarla en Didit
-      // Hacer esto incluso si el estado es null o pending para detectar si ya se verificó
+      // Si ya tiene una sesión, verificar su estado en Didit
       if (profile.kyc_didit_session_id) {
         try {
-          logger.info('Verificando sesión existente en Didit antes de crear nueva', {
-            userId: user.sub,
-            sessionId: profile.kyc_didit_session_id,
-          });
-
           const diditData = await diditService.getVerificationStatus(profile.kyc_didit_session_id);
-          
-          logger.info('Respuesta completa de Didit para verificación previa', {
-            userId: user.sub,
-            sessionId: profile.kyc_didit_session_id,
-            diditStatus: diditData.status,
-            decisionStatus: diditData.decision?.status,
-            overallStatus: diditData.verification_result?.overall_status,
-          });
-
           const currentStatus = diditService.mapDiditStatusToKYCStatus(
             diditData.status,
             diditData.verification_result?.overall_status,
             diditData.decision?.status
           );
 
-          logger.info('Estado mapeado en init', {
-            userId: user.sub,
-            mappedStatus: currentStatus,
-          });
-
           // Si ya está aprobado en Didit, actualizar DB y retornar
           if (currentStatus === 'approved') {
-            logger.info('Usuario ya está aprobado en Didit, actualizando perfil', { userId: user.sub });
-            
             const updateData: any = {
               kyc_status: 'approved',
               kyc_validated_at: new Date().toISOString(),
@@ -116,24 +94,23 @@ router.post(
             return;
           }
 
-          // Si la sesión está en progreso o revisión, reusarla
+          // Si la sesión está en progreso, reusarla
           if (currentStatus === 'in_progress') {
-             logger.info('Reusando sesión existente en progreso', { userId: user.sub });
-             res.status(StatusCodes.OK).json({
-                session_id: profile.kyc_didit_session_id,
-                verification_url: (diditData as any).url || `https://verification.didit.me/v3/session/${profile.kyc_didit_session_id}`,
-                status: 'in_progress',
-             });
-             return;
+            res.status(StatusCodes.OK).json({
+              session_id: profile.kyc_didit_session_id,
+              verification_url: (diditData as any).url || `https://verify.didit.me/session/${profile.kyc_didit_session_id}`,
+              status: 'in_progress',
+            });
+            return;
           }
           
-          // Si falló o expiró, permitimos crear una nueva más adelante
-          logger.info('Sesión existente fallida o expirada, se creará una nueva', { 
+          // Si falló o expiró, continuar para crear una nueva
+          logger.info('Sesión existente fallida o expirada, creando nueva', { 
             userId: user.sub, 
             status: currentStatus 
           });
         } catch (e) {
-          logger.warn('No se pudo verificar sesión existente, se intentará crear una nueva', { 
+          logger.warn('Error verificando sesión existente, creando nueva', { 
             userId: user.sub,
             error: e instanceof Error ? e.message : String(e)
           });
@@ -217,22 +194,28 @@ router.get(
         return;
       }
 
-      // Si hay una sesión activa, verificar estado en Didit
-      // Consultar Didit siempre que haya session_id, excepto si ya está approved
-      // Esto permite sincronizar estados que pueden haber cambiado en Didit
+      // Si ya está approved en DB, retornar inmediatamente sin consultar Didit
+      if (profile.kyc_status === 'approved') {
+        res.status(StatusCodes.OK).json({
+          status: 'approved',
+          session_id: profile.kyc_didit_session_id,
+          validated_at: profile.kyc_validated_at,
+          document_number: profile.kyc_document_number,
+          document_type: profile.kyc_document_type,
+          first_name: profile.kyc_first_name,
+          last_name: profile.kyc_last_name,
+          birth_date: profile.kyc_birth_date,
+          nationality: profile.kyc_nationality,
+        });
+        return;
+      }
+
+      // Consultar Didit solo si hay session_id y el estado no es 'approved'
       let currentStatus: KYCStatus = (profile.kyc_status as KYCStatus) || 'pending';
       let verificationData = null;
 
-      // Consultar Didit si hay session_id y el estado no es 'approved'
-      // Esto incluye casos donde el estado es null, 'pending', 'in_progress', o 'rejected'
-      if (profile.kyc_didit_session_id && profile.kyc_status !== 'approved') {
+      if (profile.kyc_didit_session_id) {
         try {
-          logger.info('Consultando estado en Didit para sincronización', {
-            userId: user.sub,
-            sessionId: profile.kyc_didit_session_id,
-            currentStatus: profile.kyc_status,
-          });
-
           const diditData = await diditService.getVerificationStatus(
             profile.kyc_didit_session_id
           );
@@ -243,25 +226,8 @@ router.get(
             diditData.decision?.status
           );
 
-          logger.info('Estado recibido de Didit', {
-            userId: user.sub,
-            sessionId: profile.kyc_didit_session_id,
-            diditStatus: diditData.status,
-            diditOverallStatus: diditData.verification_result?.overall_status,
-            diditDecisionStatus: diditData.decision?.status,
-            mappedStatus: diditStatus,
-            currentDbStatus: profile.kyc_status,
-          });
-
           // Si cambió el estado, actualizar en la base de datos
           if (diditStatus !== profile.kyc_status) {
-            logger.info('Estado KYC cambió, actualizando en DB', {
-              userId: user.sub,
-              sessionId: profile.kyc_didit_session_id,
-              oldStatus: profile.kyc_status,
-              newStatus: diditStatus,
-            });
-
             const updateData: any = {
               kyc_status: diditStatus,
               updated_at: new Date().toISOString(),
@@ -280,19 +246,11 @@ router.get(
               if (extracted?.last_name) updateData.kyc_last_name = extracted.last_name;
               if (extracted?.birth_date) updateData.kyc_birth_date = extracted.birth_date;
               if (extracted?.nationality) updateData.kyc_nationality = extracted.nationality;
-
-              logger.info('KYC aprobado, guardando datos extraídos', {
-                userId: user.sub,
-                sessionId: profile.kyc_didit_session_id,
-                documentType: doc?.type,
-                documentNumber: doc?.number,
-              });
             }
 
             await admin.from('profiles').update(updateData).eq('id', user.sub);
             currentStatus = diditStatus;
           } else {
-            // Aunque no cambió, usar el estado de Didit para asegurar consistencia
             currentStatus = diditStatus;
           }
 
@@ -301,17 +259,9 @@ router.get(
           logger.error('Error consultando estado en Didit', error as Error, {
             sessionId: profile.kyc_didit_session_id,
             userId: user.sub,
-            currentStatus: profile.kyc_status,
           });
           // Continuar con el estado guardado en DB si falla la consulta
         }
-      } else if (profile.kyc_didit_session_id && profile.kyc_status === 'approved') {
-        // Si ya está approved, no consultar Didit para evitar llamadas innecesarias
-        // pero loguear para debugging
-        logger.info('KYC ya está aprobado, omitiendo consulta a Didit', {
-          userId: user.sub,
-          sessionId: profile.kyc_didit_session_id,
-        });
       }
 
       res.status(StatusCodes.OK).json({

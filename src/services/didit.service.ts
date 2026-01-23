@@ -65,7 +65,7 @@ export class DiditService {
       // El callback permite volver a la app al finalizar la verificación
       const callbackUrl = 'movi://didit/callback';
       
-      const response = await fetch(`${this.apiUrl}/v3/session/`, {
+      const response = await fetch(`${this.apiUrl}/v2/session`, {
         method: 'POST',
         headers: {
           'X-Api-Key': this.apiKey,
@@ -75,12 +75,6 @@ export class DiditService {
           workflow_id: workflowId || this.defaultWorkflowId,
           vendor_data: userId,
           callback: callbackUrl, // URL custom para volver a la app
-          contact_details: email ? { email } : undefined,
-          metadata: {
-            user_id: userId,
-            country: 'AR',
-            document_type: 'DNI',
-          },
         }),
       });
 
@@ -113,75 +107,40 @@ export class DiditService {
 
   /**
    * Obtiene el estado y datos de una sesión de verificación
-   * Intenta usar el endpoint /decision/ para obtener el resultado real
+   * Usa el endpoint /decision/ para obtener el resultado real
    * @param sessionId ID de la sesión de Didit
    * @returns Datos completos de la sesión
    */
   async getVerificationStatus(sessionId: string): Promise<DiditSessionData> {
     try {
-      // Intentar primero con el endpoint /decision/ que es el que tiene el resultado real
-      const decisionResponse = await fetch(`${this.apiUrl}/v2/session/${sessionId}/decision/`, {
+      const response = await fetch(`${this.apiUrl}/v2/session/${sessionId}/decision/`, {
         method: 'GET',
         headers: {
           'X-Api-Key': this.apiKey,
         },
       });
 
-      if (decisionResponse.ok) {
-        const decisionData = await decisionResponse.json();
-        logger.info('Decisión de Didit obtenida exitosamente', {
-          session_id: sessionId,
-          status: decisionData.status,
-          hasDecision: !!decisionData.decision,
-        });
-        return decisionData as DiditSessionData;
-      }
-
-      // Si falla /decision/, intentar con /v3/session/ por compatibilidad
-      logger.warn('Fallo al obtener decisión, intentando con endpoint v3 de sesión', {
-        status: decisionResponse.status,
-        sessionId,
-      });
-
-      const sessionResponse = await fetch(`${this.apiUrl}/v3/session/${sessionId}`, {
-        method: 'GET',
-        headers: {
-          'X-Api-Key': this.apiKey,
-        },
-      });
-
-      if (!sessionResponse.ok) {
-        const errorText = await sessionResponse.text();
-        logger.error('Error obteniendo estado de sesión Didit en ambos endpoints', new Error(errorText), {
-          status: sessionResponse.status,
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger.error('Error obteniendo estado de sesión Didit', new Error(errorText), {
+          status: response.status,
           sessionId,
         });
-        throw new Error(`Failed to get Didit session status: ${sessionResponse.status}`);
+        throw new Error(`Failed to get Didit session status: ${response.status}`);
       }
 
-      const sessionData = await sessionResponse.json();
-      return sessionData as DiditSessionData;
+      const data = await response.json();
+      logger.info('Estado de sesión Didit obtenido exitosamente', {
+        session_id: sessionId,
+        status: data.status,
+        hasDecision: !!data.decision,
+      });
+      
+      return data as DiditSessionData;
     } catch (error: any) {
       logger.error('Error en getVerificationStatus', error as Error, { sessionId });
       throw error;
     }
-  }
-
-  /**
-   * Obtiene específicamente la decisión de una sesión
-   * @param sessionId ID de la sesión
-   */
-  async getVerificationDecision(sessionId: string): Promise<DiditSessionData> {
-    return this.getVerificationStatus(sessionId);
-  }
-
-  /**
-   * Obtiene los datos extraídos de la verificación
-   * @param sessionId ID de la sesión de Didit
-   * @returns Datos extraídos del documento y resultado de face matching
-   */
-  async getVerificationData(sessionId: string): Promise<DiditSessionData> {
-    return this.getVerificationStatus(sessionId);
   }
 
   /**
