@@ -242,7 +242,7 @@ router.post('/start', asyncHandler(async (req: Request, res: Response) => {
   }
 }));
 
-router.post('/api/webhook/didit', express.json({ type: '*/*' }), asyncHandler(async (req: Request, res: Response) => {
+router.post('/webhook/didit', express.json({ type: '*/*' }), asyncHandler(async (req: Request, res: Response) => {
   // Didit envía la firma HMAC SHA256 en el header 'X-Signature' y un timestamp en 'X-Timestamp'
   const signatureHeader = req.headers['x-signature'];
   const timestampHeader = req.headers['x-timestamp'];
