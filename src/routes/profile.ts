@@ -58,7 +58,7 @@ router.get('/me', asyncHandler(async (req, res) => {
   try {
     const { data, error } = await admin
       .from('profiles')
-      .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, mp_user_id, mp_status, mp_token_expires_at, created_at, updated_at')
+      .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, mp_user_id, mp_status, mp_token_expires_at, kyc_status, kyc_validated_at, created_at, updated_at')
       .eq('id', user.sub)
       .maybeSingle();
 
@@ -99,6 +99,8 @@ router.get('/me', asyncHandler(async (req, res) => {
           mp_user_id: null,
           mp_status: null,
           mp_token_expires_at: null,
+          kyc_status: null,
+          kyc_validated_at: null,
           updated_at: null,
         };
         res.json(response);

@@ -18,6 +18,7 @@ import { authMiddleware } from './middleware/auth';
 import { apiRateLimiter, authRateLimiter } from './middleware/rateLimiter';
 import { logger } from './utils/logger';
 import { env } from './env';
+import { kycRouter } from './routes/kyc';
 
 dotenv.config();
 
@@ -72,6 +73,7 @@ app.use('/payments', apiRateLimiter, paymentRouter);
 app.use('/driver-transfers', apiRateLimiter, authMiddleware, driverTransfersRouter);
 app.use('/withdrawal-requests', apiRateLimiter, authMiddleware, withdrawalRequestsRouter);
 // app.use('/mp', apiRateLimiter, mercadoPagoOAuthRouter); // Deshabilitado - Marketplace removido
+app.use('/kyc', apiRateLimiter, kycRouter)
 
 app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
   logger.error('Error no manejado', err, {
