@@ -144,6 +144,24 @@ router.post('/start', asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  // Verificar si el usuario ya tiene una sesión en proceso
+  const admin = createAdminClient();
+  const { data: existingProfile } = await admin
+    .from('profiles')
+    .select('kyc_status, kyc_didit_session_id')
+    .eq('id', userId)
+    .maybeSingle();
+
+  // Si ya hay una sesión en revisión, no crear una nueva
+  if (existingProfile?.kyc_status === 'in_review' && existingProfile?.kyc_didit_session_id) {
+    logger.info('Usuario ya tiene sesión en proceso', { userId, sessionId: existingProfile.kyc_didit_session_id });
+    res.status(StatusCodes.CONFLICT).json({ 
+      error: 'Ya existe una verificación en proceso. Por favor, espera a que se complete.',
+      code: 'VERIFICATION_IN_PROGRESS',
+    });
+    return;
+  }
+
   // Preparar solicitud a Didit
   const diditPayload = {
     workflow_id: process.env.DIDIT_WORKFLOW_ID,
@@ -167,6 +185,26 @@ router.post('/start', asyncHandler(async (req: Request, res: Response) => {
     const sessionId = diditResponse.data.session_id;
     const status = diditResponse.data.status || 'not_started';
 
+    logger.info('Sesión Didit creada', {
+      userId,
+      sessionId,
+      status,
+      hasUrl: !!verificationUrl,
+      urlPreview: verificationUrl ? verificationUrl.substring(0, 50) + '...' : 'sin URL',
+    });
+
+    // Validar que tengamos la URL
+    if (!verificationUrl) {
+      logger.error('Didit no devolvió URL en la respuesta', undefined, {
+        userId,
+        responseData: diditResponse.data,
+      });
+      res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+        error: 'No se recibió la URL de verificación de Didit',
+      });
+      return;
+    }
+
     // Guardar session_id y estado en la base de datos
     if (sessionId) {
       await saveSession(userId, sessionId, status);
@@ -175,13 +213,31 @@ router.post('/start', asyncHandler(async (req: Request, res: Response) => {
     res.json({ url: verificationUrl });
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
-    const errorResponse = (error as any)?.response?.data;
+    const axiosError = error as any;
+    const errorResponse = axiosError?.response?.data;
+    const statusCode = axiosError?.response?.status;
+
     logger.error('Error creando sesion Didit', error as Error, {
       userId,
+      statusCode,
       errorResponse: errorResponse || errorMessage,
     });
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ 
-      error: 'Error iniciando verificación de identidad' 
+
+    // Manejar error 429 (rate limit) específicamente
+    if (statusCode === 429) {
+      const rateLimitMessage = errorResponse?.detail || 'Límite de solicitudes excedido. Por favor, espera un momento.';
+      res.status(StatusCodes.TOO_MANY_REQUESTS).json({ 
+        error: rateLimitMessage,
+        code: 'RATE_LIMIT_EXCEEDED',
+        retryAfter: 60, // segundos
+      });
+      return;
+    }
+
+    // Otros errores
+    res.status(statusCode || StatusCodes.INTERNAL_SERVER_ERROR).json({ 
+      error: errorResponse?.detail || errorResponse?.error || 'Error iniciando verificación de identidad',
+      details: errorResponse,
     });
   }
 }));
