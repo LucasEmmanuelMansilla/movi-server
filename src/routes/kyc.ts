@@ -3,7 +3,7 @@
 // DIDIT_WORKFLOW_ID=<UUID del flujo Didit configurado>
 // DIDIT_WEBHOOK_SECRET=<Secret para verificar webhooks>
 
-import express, { Router, Request, Response } from 'express';
+import express, { Router, Request, Response, NextFunction } from 'express';
 import axios from 'axios';
 import crypto from 'crypto';
 import { createAdminClient } from '../lib/supabase';
@@ -242,7 +242,25 @@ router.post('/start', asyncHandler(async (req: Request, res: Response) => {
   }
 }));
 
-router.post('/webhook/didit', express.json({ type: '*/*' }), asyncHandler(async (req: Request, res: Response) => {
+// Middleware para capturar el body raw antes de que Express lo parsee
+const rawBodyMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  let data = '';
+  req.setEncoding('utf8');
+  req.on('data', (chunk) => {
+    data += chunk;
+  });
+  req.on('end', () => {
+    (req as any).rawBody = data;
+    try {
+      req.body = JSON.parse(data);
+    } catch {
+      req.body = {};
+    }
+    next();
+  });
+};
+
+router.post('/webhook/didit', rawBodyMiddleware, asyncHandler(async (req: Request, res: Response) => {
   // Didit envía la firma HMAC SHA256 en el header 'X-Signature' y un timestamp en 'X-Timestamp'
   const signatureHeader = req.headers['x-signature'];
   const timestampHeader = req.headers['x-timestamp'];
@@ -257,7 +275,9 @@ router.post('/webhook/didit', express.json({ type: '*/*' }), asyncHandler(async 
     return;
   }
 
-  const bodyString = JSON.stringify(req.body);
+  // Usar el body raw (sin parsear) para la verificación de firma
+  // Esto es crítico porque JSON.stringify puede cambiar el formato (espacios, orden de claves)
+  const rawBody = (req as any).rawBody || '';
   const webhookSecret = process.env.DIDIT_WEBHOOK_SECRET;
 
   if (!webhookSecret) {
@@ -267,16 +287,40 @@ router.post('/webhook/didit', express.json({ type: '*/*' }), asyncHandler(async 
   }
 
   // Verificar que el payload proviene de Didit calculando HMAC con nuestro WEBHOOK_SECRET
-  const expectedSig = crypto
+  // Didit puede usar dos formatos:
+  // 1. HMAC-SHA256(rawBody, secret) - formato más común
+  // 2. HMAC-SHA256(timestamp + rawBody, secret) - algunos proveedores usan esto
+  // Probamos primero sin timestamp, luego con timestamp si falla
+  let expectedSig = crypto
     .createHmac('sha256', webhookSecret)
-    .update(timestamp + bodyString)
+    .update(rawBody)
     .digest('hex');
+  
+  // Si no coincide, intentar con timestamp
+  if (signature !== expectedSig) {
+    expectedSig = crypto
+      .createHmac('sha256', webhookSecret)
+      .update(timestamp + rawBody)
+      .digest('hex');
+  }
     
   if (signature !== expectedSig) {
-    logger.warn('Firma de webhook Didit no válida!', { signature, expectedSig: expectedSig.substring(0, 10) + '...' });
+    logger.warn('Firma de webhook Didit no válida!', { 
+      signature, 
+      expectedSigWithoutTimestamp: crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex').substring(0, 20) + '...',
+      expectedSigWithTimestamp: crypto.createHmac('sha256', webhookSecret).update(timestamp + rawBody).digest('hex').substring(0, 20) + '...',
+      timestamp,
+      bodyLength: rawBody.length,
+      bodyPreview: rawBody.substring(0, 100) + '...'
+    });
     res.status(StatusCodes.UNAUTHORIZED).end(); // Unauthorized - firma no coincide
     return;
   }
+  
+  logger.info('✅ Firma de webhook Didit válida', { 
+    timestamp,
+    bodyLength: rawBody.length 
+  });
 
   // (Opcional) Verificar frescura del timestamp para evitar replays
   const FIVE_MIN = 5 * 60;
