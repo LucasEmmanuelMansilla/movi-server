@@ -242,25 +242,9 @@ router.post('/start', asyncHandler(async (req: Request, res: Response) => {
   }
 }));
 
-// Middleware para capturar el body raw antes de que Express lo parsee
-const rawBodyMiddleware = (req: Request, res: Response, next: NextFunction) => {
-  let data = '';
-  req.setEncoding('utf8');
-  req.on('data', (chunk) => {
-    data += chunk;
-  });
-  req.on('end', () => {
-    (req as any).rawBody = data;
-    try {
-      req.body = JSON.parse(data);
-    } catch {
-      req.body = {};
-    }
-    next();
-  });
-};
-
-router.post('/webhook/didit', rawBodyMiddleware, asyncHandler(async (req: Request, res: Response) => {
+// Para el webhook, necesitamos el body raw (sin parsear) para verificar la firma
+// NOTA: express.raw() ya se aplica en index.ts antes de montar este router
+export const handleDiditWebhook = asyncHandler(async (req: Request, res: Response) => {
   // Didit envía la firma HMAC SHA256 en el header 'X-Signature' y un timestamp en 'X-Timestamp'
   const signatureHeader = req.headers['x-signature'];
   const timestampHeader = req.headers['x-timestamp'];
@@ -277,7 +261,19 @@ router.post('/webhook/didit', rawBodyMiddleware, asyncHandler(async (req: Reques
 
   // Usar el body raw (sin parsear) para la verificación de firma
   // Esto es crítico porque JSON.stringify puede cambiar el formato (espacios, orden de claves)
-  const rawBody = (req as any).rawBody || '';
+  // Con express.raw(), req.body es un Buffer, lo convertimos a string
+  const rawBody = req.body instanceof Buffer ? req.body.toString('utf8') : (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
+  
+  // Parsear el body para usarlo después
+  let event;
+  try {
+    event = JSON.parse(rawBody);
+  } catch {
+    logger.error('Error parseando body del webhook', undefined, { rawBody: rawBody.substring(0, 100) });
+    res.status(StatusCodes.BAD_REQUEST).json({ error: 'Body inválido' });
+    return;
+  }
+  
   const webhookSecret = process.env.DIDIT_WEBHOOK_SECRET;
 
   if (!webhookSecret) {
@@ -331,8 +327,7 @@ router.post('/webhook/didit', rawBodyMiddleware, asyncHandler(async (req: Reques
     return;
   }
 
-  // Procesar el evento de verificación
-  const event = req.body;
+  // Procesar el evento de verificación (ya parseado arriba)
   // Por ejemplo, Didit puede enviar: { session_id, status, vendor_data, ... otros campos ... }
   logger.info('Webhook Didit recibido', { 
     sessionId: event.session_id, 
@@ -386,6 +381,9 @@ router.post('/webhook/didit', rawBodyMiddleware, asyncHandler(async (req: Reques
   }
 
   res.status(StatusCodes.OK).end(); // Responder 200 OK al webhook
-}));
+});
+
+// También exportamos como ruta del router para compatibilidad
+router.post('/webhook/didit', handleDiditWebhook);
 
 export { router as kycRouter };

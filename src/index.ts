@@ -18,7 +18,7 @@ import { authMiddleware } from './middleware/auth';
 import { apiRateLimiter, authRateLimiter } from './middleware/rateLimiter';
 import { logger } from './utils/logger';
 import { env } from './env';
-import { kycRouter } from './routes/kyc';
+import { kycRouter, handleDiditWebhook } from './routes/kyc';
 
 dotenv.config();
 
@@ -44,7 +44,13 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
 }));
 
-// Body parsing
+// IMPORTANTE: La ruta del webhook de Didit debe capturar el body raw
+// Por eso la montamos ANTES de express.json()
+// Importamos el handler directamente desde el router
+import { handleDiditWebhook } from './routes/kyc';
+app.post('/kyc/webhook/didit', express.raw({ type: 'application/json', limit: '10mb' }), handleDiditWebhook);
+
+// Body parsing (después del webhook para que no interfiera)
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -64,6 +70,8 @@ app.get('/health', (_req: Request, res: Response) => {
 });
 
 // Routes con rate limiting
+// IMPORTANTE: La ruta del webhook de Didit debe ir ANTES de express.json()
+// para poder capturar el body raw. Por eso montamos el router de KYC después.
 app.use('/auth', authRateLimiter, authRouter);
 app.use('/shipments', apiRateLimiter, authMiddleware, shipmentRouter);
 app.use('/push', apiRateLimiter, authMiddleware, pushRouter);
@@ -73,7 +81,7 @@ app.use('/payments', apiRateLimiter, paymentRouter);
 app.use('/driver-transfers', apiRateLimiter, authMiddleware, driverTransfersRouter);
 app.use('/withdrawal-requests', apiRateLimiter, authMiddleware, withdrawalRequestsRouter);
 // app.use('/mp', apiRateLimiter, mercadoPagoOAuthRouter); // Deshabilitado - Marketplace removido
-app.use('/kyc', apiRateLimiter, kycRouter)
+app.use('/kyc', apiRateLimiter, kycRouter);
 
 app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
   logger.error('Error no manejado', err, {
