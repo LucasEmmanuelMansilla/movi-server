@@ -46,8 +46,7 @@ app.use(helmet({
 
 // IMPORTANTE: La ruta del webhook de Didit debe capturar el body raw
 // Por eso la montamos ANTES de express.json()
-// Importamos el handler directamente desde el router
-import { handleDiditWebhook } from './routes/kyc';
+// handleDiditWebhook ya está importado arriba junto con kycRouter
 app.post('/kyc/webhook/didit', express.raw({ type: 'application/json', limit: '10mb' }), handleDiditWebhook);
 
 // Body parsing (después del webhook para que no interfiera)
