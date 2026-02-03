@@ -211,6 +211,94 @@ export class MercadoPagoService {
   }
 
   /**
+   * Crea una transferencia de dinero desde la cuenta principal a CBU/CVU/Alias del destinatario.
+   * Requiere que el Access Token tenga permisos de transferencia (cuenta vendedor con fondos).
+   */
+  public async createMoneyTransfer(params: {
+    amount: number;
+    currencyId: 'ARS';
+    description: string;
+    recipient: {
+      cbu?: string;
+      cvu?: string;
+      alias?: string;
+      accountHolderName: string;
+    };
+  }): Promise<{ id: string; status: string }> {
+    const accessToken = env.MERCADOPAGO_ACCESS_TOKEN;
+    if (!accessToken) {
+      throw new Error('Mercado Pago no está configurado (MERCADOPAGO_ACCESS_TOKEN)');
+    }
+
+    const { cbu, cvu, alias, accountHolderName } = params.recipient;
+    if (!cbu && !cvu && !alias) {
+      throw new Error('Se debe proporcionar CBU, CVU o Alias del destinatario');
+    }
+    if (!accountHolderName?.trim()) {
+      throw new Error('Se debe proporcionar el nombre del titular de la cuenta');
+    }
+
+    const body: Record<string, unknown> = {
+      amount: Number(params.amount),
+      currency_id: params.currencyId,
+      description: params.description,
+      destination: {
+        entity_type: 'bank_account',
+        identification: {
+          type: 'Otro',
+          number: '',
+        },
+        account_holder_name: accountHolderName.trim(),
+      },
+    };
+
+    if (cbu) {
+      (body.destination as any).cbu = String(cbu).replace(/\s/g, '');
+    } else if (cvu) {
+      (body.destination as any).cvu = String(cvu).replace(/\s/g, '');
+    } else if (alias) {
+      (body.destination as any).alias = String(alias).trim();
+    }
+
+    logger.info('Creando transferencia Mercado Pago', {
+      amount: params.amount,
+      hasCbu: !!cbu,
+      hasCvu: !!cvu,
+      hasAlias: !!alias,
+      isSandbox: this.isSandbox,
+    });
+
+    const response = await fetch(`${this.baseUrl}/v1/money_transfers`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    const responseText = await response.text();
+    let data: any;
+    try {
+      data = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      throw new Error(`Error en transferencia MP: ${response.status} - ${responseText}`);
+    }
+
+    if (!response.ok) {
+      const errMsg = data?.message || data?.error || data?.cause?.description || responseText;
+      logger.error('Error en transferencia Mercado Pago', new Error(String(errMsg)), { status: response.status, data });
+      throw new Error(errMsg || `Error en transferencia: ${response.status}`);
+    }
+
+    return {
+      id: data.id || data.transfer_id || String(data),
+      status: data.status || 'pending',
+    };
+  }
+
+  /**
    * Obtiene información del usuario de Mercado Pago usando su access token
    */
   public async getMercadoPagoUser(accessToken: string): Promise<MercadoPagoUser> {

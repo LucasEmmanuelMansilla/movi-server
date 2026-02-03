@@ -11,8 +11,6 @@ import { sendPush } from './push';
 
 const router = Router();
 
-const MIN_WITHDRAW_AMOUNT_ARS = 1000;
-
 const CreateTransferBody = z.object({
   paymentId: z.string().uuid('ID de pago inválido'),
   transferMethod: z.enum(['manual', 'automatic', 'cash']).default('manual'),
@@ -29,20 +27,6 @@ const ListTransfersQuery = z.object({
   status: z.enum(['pending', 'completed', 'failed', 'cancelled']).optional(),
   limit: z.string().optional(),
   offset: z.string().optional(),
-});
-
-const WithdrawBody = z.object({
-  amount: z.preprocess((v) => {
-    if (typeof v === 'string') {
-      const normalized = v.replace(',', '.').trim();
-      const n = Number(normalized);
-      return Number.isFinite(n) ? n : v;
-    }
-    return v;
-  }, z.number().finite().positive())
-  .refine((n) => n > MIN_WITHDRAW_AMOUNT_ARS, {
-    message: `El monto mínimo de retiro debe ser mayor a $${MIN_WITHDRAW_AMOUNT_ARS}`,
-  }),
 });
 
 router.get('/', validateQuery(ListTransfersQuery), authMiddleware, asyncHandler(async (req, res) => {
@@ -384,12 +368,24 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
         ?.filter(p => (p.shipment as any)?.current_status === 'delivered')
         .reduce((sum, p) => sum + (p.driver_amount || 0), 0) || 0;
 
-      // Reservar también transferencias pendientes para evitar doble retiro/solapamiento.
+      // Reservar transferencias pendientes/completadas para evitar doble retiro.
       const reservedOrPaid = transfers
         ?.filter((t: any) => t.status === 'completed' || t.status === 'pending')
         .reduce((sum: number, t: any) => sum + (Number(t?.amount) || 0), 0) || 0;
 
-      availableBalance = Math.round((totalEarned - reservedOrPaid) * 100) / 100;
+      // Restar retiros comprometidos (pending, needs_details, in_process legacy)
+      const adminAny = admin as any;
+      const { data: withdrawalReqs } = await adminAny
+        .from('withdrawal_requests')
+        .select('amount')
+        .eq('user_id', user.sub)
+        .in('status', ['pending', 'needs_details', 'in_process']);
+      const withdrawalCommitted = withdrawalReqs?.reduce(
+        (sum: number, r: { amount: number }) => sum + (Number(r?.amount) || 0),
+        0
+      ) || 0;
+
+      availableBalance = Math.round((totalEarned - reservedOrPaid - withdrawalCommitted) * 100) / 100;
     } catch (err) {
       logger.error('Error calculando balance disponible en stats', err as Error);
     }
@@ -417,127 +413,6 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
     pendingAmount: Math.round(pendingAmount * 100) / 100,
     completedAmount: Math.round(completedAmount * 100) / 100,
   });
-}));
-
-router.post('/withdraw', validateBody(WithdrawBody), authMiddleware, asyncHandler(async (req, res) => {
-  const user = req.user as { sub: string; role?: Role } | undefined;
-  if (!user?.sub) {
-    res.status(StatusCodes.UNAUTHORIZED).json({ error: 'No autorizado' });
-    return;
-  }
-
-  const requestedAmountRaw = (req.body as any)?.amount;
-  const requestedAmount = Math.round(Number(requestedAmountRaw) * 100) / 100;
-
-  const admin = createAdminClient();
-  // Tabla `withdrawal_requests` no está tipada en `supabase.types.ts`,
-  // por eso usamos un alias sin tipado estricto solo para esas consultas.
-  const adminAny = admin as any;
-
-  const { data: profile } = await admin
-    .from('profiles')
-    .select('id, role')
-    .eq('id', user.sub)
-    .maybeSingle();
-
-  if (!profile || profile.role !== 'driver') {
-    res.status(StatusCodes.FORBIDDEN).json({ error: 'Solo conductores pueden retirar fondos' });
-    return;
-  }
-
-  // Verificar saldo disponible
-  const { data: payments } = await admin
-    .from('payments')
-    .select(`
-      driver_amount,
-      shipment:shipments!payments_shipment_id_fkey(current_status)
-    `)
-    .eq('driver_id', user.sub)
-    .eq('status', 'approved');
-
-  const { data: transfers } = await admin
-    .from('driver_transfers')
-    .select('status, amount')
-    .eq('driver_id', user.sub)
-    .in('status', ['pending', 'completed'] as any);
-
-  const totalEarned = payments
-    ?.filter(p => (p.shipment as any)?.current_status === 'delivered')
-    .reduce((sum, p) => sum + (p.driver_amount || 0), 0) || 0;
-  const reservedOrPaid = transfers?.reduce((sum, t: any) => sum + (Number(t?.amount) || 0), 0) || 0;
-  const availableBalance = Math.round((totalEarned - reservedOrPaid) * 100) / 100;
-
-  // Verificar si hay trámites pendientes que reduzcan el saldo disponible
-  const { data: pendingRequests } = await adminAny
-    .from('withdrawal_requests')
-    .select('amount')
-    .eq('user_id', user.sub)
-    .eq('status', 'pending');
-
-  const pendingAmount = pendingRequests?.reduce(
-    (sum: number, r: { amount: number }) => sum + (Number(r.amount) || 0),
-    0
-  ) || 0;
-  const finalAvailableBalance = Math.round((availableBalance - pendingAmount) * 100) / 100;
-
-  if (finalAvailableBalance <= MIN_WITHDRAW_AMOUNT_ARS) {
-    res.status(StatusCodes.BAD_REQUEST).json({ 
-      error: `Necesitás más de $${MIN_WITHDRAW_AMOUNT_ARS} disponibles para retirar`,
-      availableBalance: finalAvailableBalance,
-    });
-    return;
-  }
-
-  if (requestedAmount > finalAvailableBalance) {
-    res.status(StatusCodes.BAD_REQUEST).json({ 
-      error: 'El monto supera tu saldo disponible',
-      availableBalance: finalAvailableBalance,
-    });
-    return;
-  }
-
-  // Crear trámite de retiro manual
-  try {
-    const { data: withdrawalRequest, error: createError } = await adminAny
-      .from('withdrawal_requests')
-      .insert({
-        user_id: user.sub,
-        amount: requestedAmount,
-        status: 'pending',
-        admin_id: null,
-        money_sent: null,
-        rejection_reason: null,
-        admin_notes: null,
-        processed_at: null,
-      } as any)
-      .select('*')
-      .single();
-
-    if (createError || !withdrawalRequest) {
-      logger.error('Error creando trámite de retiro', createError as any);
-      res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: 'Error creando trámite de retiro' });
-      return;
-    }
-
-    logger.info('Trámite de retiro creado', { 
-      withdrawalRequestId: withdrawalRequest.id, 
-      userId: user.sub, 
-      amount: requestedAmount 
-    });
-
-    res.json({
-      success: true,
-      amount: requestedAmount,
-      withdrawalRequestId: withdrawalRequest.id,
-      message: `Trámite de retiro de $${requestedAmount} creado exitosamente. Un administrador lo procesará pronto.`,
-    });
-  } catch (error: any) {
-    logger.error('Error en proceso de retiro', error);
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
-      error: 'Error al crear el trámite de retiro',
-      message: error.message,
-    });
-  }
 }));
 
 export const driverTransfersRouter = router;
