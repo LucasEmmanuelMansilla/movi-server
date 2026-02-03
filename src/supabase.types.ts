@@ -477,6 +477,63 @@ export type Database = {
           },
         ]
       }
+      withdrawal_requests: {
+        Row: {
+          id: string
+          user_id: string
+          amount: number
+          status: string
+          admin_id: string | null
+          money_sent: boolean | null
+          rejection_reason: string | null
+          admin_notes: string | null
+          processed_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          amount: number
+          status?: string
+          admin_id?: string | null
+          money_sent?: boolean | null
+          rejection_reason?: string | null
+          admin_notes?: string | null
+          processed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          amount?: number
+          status?: string
+          admin_id?: string | null
+          money_sent?: boolean | null
+          rejection_reason?: string | null
+          admin_notes?: string | null
+          processed_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "withdrawal_requests_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "withdrawal_requests_admin_id_fkey"
+            columns: ["admin_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
