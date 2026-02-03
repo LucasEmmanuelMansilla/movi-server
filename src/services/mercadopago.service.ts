@@ -268,7 +268,10 @@ export class MercadoPagoService {
       isSandbox: this.isSandbox,
     });
 
-    const response = await fetch(`${this.baseUrl}/v1/money_transfers`, {
+    // La API de Mercado Pago usa /v1/ (minúscula). Si el recurso no existe (404), MP devuelve
+    // un mensaje genérico de MercadoLibre; detectamos ese caso para dar un error claro.
+    const moneyTransfersUrl = `${this.baseUrl}/v1/money_transfers`;
+    const response = await fetch(moneyTransfersUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -279,17 +282,35 @@ export class MercadoPagoService {
     });
 
     const responseText = await response.text();
+    const isGenericMercadoLibreError =
+      response.status === 404 ||
+      /developers\.mercadolibre|Sitio de Desarrolladores|recursos de la API/i.test(responseText);
+
+    if (isGenericMercadoLibreError) {
+      const friendlyMessage =
+        'La API de transferencias de Mercado Pago no está disponible para esta cuenta. ' +
+        'Verificá en el panel de desarrolladores de Mercado Pago si tu aplicación tiene habilitado ' +
+        'el recurso de transferencias a cuentas bancarias (money transfers) o contactá a soporte de Mercado Pago.';
+      logger.error('Error en transferencia Mercado Pago (recurso no disponible)', new Error(friendlyMessage), {
+        status: response.status,
+        url: moneyTransfersUrl,
+      });
+      throw new Error(friendlyMessage);
+    }
+
     let data: any;
     try {
-      data = responseText ? JSON.parse(responseText) : {};
+      data = responseText && responseText.trim().startsWith('{') ? JSON.parse(responseText) : {};
     } catch {
-      throw new Error(`Error en transferencia MP: ${response.status} - ${responseText}`);
+      throw new Error(
+        `Error en transferencia Mercado Pago: ${response.status}. La respuesta no es JSON válida. Verificá credenciales y que la API de transferencias esté habilitada.`
+      );
     }
 
     if (!response.ok) {
       const errMsg = data?.message || data?.error || data?.cause?.description || responseText;
       logger.error('Error en transferencia Mercado Pago', new Error(String(errMsg)), { status: response.status, data });
-      throw new Error(errMsg || `Error en transferencia: ${response.status}`);
+      throw new Error(typeof errMsg === 'string' ? errMsg : `Error en transferencia: ${response.status}`);
     }
 
     return {
