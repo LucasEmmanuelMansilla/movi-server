@@ -58,7 +58,7 @@ router.get('/me', asyncHandler(async (req, res) => {
   try {
     const { data, error } = await admin
       .from('profiles')
-      .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, mp_user_id, mp_status, mp_token_expires_at, kyc_status, kyc_validated_at, created_at, updated_at')
+      .select('id, role, full_name, phone, email, avatar_url, address, license_number, vehicle_type, vehicle_plate, is_available, business_name, business_address, bank_account_type, bank_cbu, bank_cvu, bank_alias, bank_name, bank_account_number, bank_account_holder_name, mp_user_id, mp_status, mp_token_expires_at, kyc_status, kyc_validated_at, privacy_policy_accepted, privacy_policy_accepted_at, created_at, updated_at')
       .eq('id', user.sub)
       .maybeSingle();
 
@@ -101,6 +101,8 @@ router.get('/me', asyncHandler(async (req, res) => {
           mp_token_expires_at: null,
           kyc_status: null,
           kyc_validated_at: null,
+          privacy_policy_accepted: null,
+          privacy_policy_accepted_at: null,
           updated_at: null,
         };
         res.json(response);
@@ -335,6 +337,48 @@ router.put('/me', asyncHandler(async (req, res) => {
       error: 'Failed to update profile' 
     });
     return;
+  }
+}));
+
+router.post('/me/accept-privacy-policy', asyncHandler(async (req, res) => {
+  const user = req.user as { sub: string } | undefined;
+  if (!user?.sub) {
+    res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  const admin = createAdminClient();
+  const now = new Date().toISOString();
+
+  try {
+    const { error } = await admin
+      .from('profiles')
+      .update({
+        privacy_policy_accepted: true,
+        privacy_policy_accepted_at: now,
+        updated_at: now,
+      })
+      .eq('id', user.sub);
+
+    if (error) {
+      if (error.code === '42703' || error.message?.includes('does not exist')) {
+        res.status(StatusCodes.SERVICE_UNAVAILABLE).json({
+          error: 'La base de datos aún no tiene los campos de privacidad. Ejecuta la migración add-privacy-policy-accepted.sql',
+        });
+        return;
+      }
+      throw error;
+    }
+
+    res.status(StatusCodes.OK).json({
+      ok: true,
+      privacy_policy_accepted: true,
+      privacy_policy_accepted_at: now,
+    });
+  } catch (error) {
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'Error al registrar la aceptación de políticas',
+    });
   }
 }));
 

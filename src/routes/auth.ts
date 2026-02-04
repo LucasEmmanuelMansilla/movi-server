@@ -14,6 +14,7 @@ const ExchangeBody = z.object({
   role: z.enum(['driver', 'business', 'admin']).optional(),
   full_name: z.string().optional(),
   phone: z.string().optional(),
+  privacy_policy_accepted: z.boolean().optional(),
 });
 
 const LoginBody = z.object({
@@ -105,7 +106,7 @@ router.post('/exchange', asyncHandler(async (req, res) => {
     return;
   }
   
-  const { access_token, role, full_name, phone } = parsed.data;
+  const { access_token, role, full_name, phone, privacy_policy_accepted } = parsed.data;
 
   try {
     const userClient = createUserClient(access_token);
@@ -149,6 +150,13 @@ router.post('/exchange', asyncHandler(async (req, res) => {
       full_name: full_name ?? prof?.full_name ?? null,
       phone: phone ?? prof?.phone ?? null,
     };
+
+    if (privacy_policy_accepted === true) {
+      const now = new Date().toISOString();
+      upsertData.privacy_policy_accepted = true;
+      upsertData.privacy_policy_accepted_at = now;
+      upsertData.updated_at = now;
+    }
     
     const { error: upsertErr } = await admin.from('profiles').upsert(upsertData);
 
