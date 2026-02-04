@@ -8,17 +8,16 @@ import { validateBody, validateParams, validateQuery } from '../utils/validation
 import { authMiddleware } from '../middleware/auth';
 import { adminMiddleware } from '../middleware/admin';
 import type { Role } from '../types';
-import { MercadoPagoService } from '../services/mercadopago.service';
+import { sendPush } from './push';
 
 const router = Router();
-const mpService = MercadoPagoService.getInstance();
 
 const CreateWithdrawalRequestBody = z.object({
   amount: z.number().positive().finite(),
 });
 
 // Estados permitidos para procesar un trámite:
-// - approved: el dinero fue enviado correctamente (transferencia MP)
+// - approved: el admin confirmó que envió el dinero manualmente
 // - rejected: el trámite se rechaza con una razón
 // - needs_details: admin solicita más datos al driver
 const ProcessWithdrawalBody = z.object({
@@ -445,9 +444,8 @@ router.patch('/:id/process',
       return;
     }
 
-    let mpTransferId: string | null = null;
-
-    // Si aprobamos, ejecutar transferencia automática vía Mercado Pago ANTES de actualizar
+    // Si aprobamos: el admin confirma que envió el dinero manualmente (transferencia bancaria, Mercado Pago, etc.)
+    // NO usamos API de Mercado Pago; el admin hace la transferencia por su cuenta.
     if (status === 'approved') {
       const { data: driverProfile } = await adminAny
         .from('profiles')
@@ -457,7 +455,7 @@ router.patch('/:id/process',
 
       if (!driverProfile?.bank_account_holder_name) {
         res.status(StatusCodes.BAD_REQUEST).json({
-          error: 'El conductor no tiene datos bancarios completos. Solicita más detalles antes de aprobar.',
+          error: 'El conductor no tiene datos bancarios completos. Solicita más detalles antes de confirmar.',
         });
         return;
       }
@@ -471,28 +469,8 @@ router.patch('/:id/process',
         });
         return;
       }
-
-      try {
-        const transferResult = await mpService.createMoneyTransfer({
-          amount: withdrawalRequest.amount,
-          currencyId: 'ARS',
-          description: `Retiro Movi - Trámite ${id}`,
-          recipient: {
-            cbu: driverProfile.bank_cbu?.trim(),
-            cvu: driverProfile.bank_cvu?.trim(),
-            alias: driverProfile.bank_alias?.trim(),
-            accountHolderName: driverProfile.bank_account_holder_name,
-          },
-        });
-        mpTransferId = transferResult.id;
-        logger.info('Transferencia MP ejecutada', { mpTransferId, withdrawalId: id });
-      } catch (mpError: any) {
-        logger.error('Error en transferencia Mercado Pago', mpError as Error, { withdrawalId: id });
-        res.status(StatusCodes.BAD_GATEWAY).json({
-          error: mpError?.message || 'Error al ejecutar la transferencia. Verifica saldo y datos bancarios.',
-        });
-        return;
-      }
+      // Los datos bancarios están arriba en el modal para que el admin haga la transferencia manualmente
+      logger.info('Admin confirma envío manual de dinero', { withdrawalId: id, amount: withdrawalRequest.amount });
     }
 
     // Actualizar trámite
@@ -535,13 +513,33 @@ router.patch('/:id/process',
             payment_id: null,
             amount: withdrawalRequest.amount,
             status: 'completed',
-            transfer_method: 'mercadopago',
-            mp_transfer_id: mpTransferId,
+            transfer_method: 'manual',
+            mp_transfer_id: null,
             transferred_at: new Date().toISOString(),
-            notes: `Retiro aprobado - Trámite ID: ${id}. ${admin_notes || ''}`,
+            notes: `Retiro confirmado manualmente - Trámite ID: ${id}. ${admin_notes || ''}`,
           } as any);
       } catch (transferError) {
         logger.warn('Error creando registro en driver_transfers', transferError as Error);
+      }
+
+      // Notificar al driver que se le transfirió el dinero
+      try {
+        const { data: tokens } = await adminAny
+          .from('push_tokens')
+          .select('token')
+          .eq('user_id', withdrawalRequest.user_id);
+        const pushTokens = (tokens || []).map((t: { token: string }) => t.token);
+        if (pushTokens.length > 0) {
+          await sendPush(
+            pushTokens,
+            'Dinero transferido',
+            `Se te transfirieron $${Number(withdrawalRequest.amount).toLocaleString('es-AR')} a tu cuenta. Tu saldo ya fue actualizado.`,
+            { type: 'withdrawal_completed', withdrawalId: id }
+          );
+          logger.info('Notificación de retiro enviada al driver', { driverId: withdrawalRequest.user_id, withdrawalId: id });
+        }
+      } catch (pushError) {
+        logger.warn('Error enviando notificación de retiro al driver', pushError as Error);
       }
     }
 
