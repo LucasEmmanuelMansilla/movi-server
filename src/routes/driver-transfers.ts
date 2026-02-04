@@ -338,7 +338,8 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
     .eq('id', user.sub)
     .maybeSingle();
 
-  let query = admin.from('driver_transfers').select('status, amount');
+  const adminAny = admin as any;
+  let query = admin.from('driver_transfers').select('status, amount, payment_id');
 
   if (profile?.role === 'driver') {
     query = query.eq('driver_id', user.sub);
@@ -350,6 +351,20 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
     logger.error('Error obteniendo estadísticas', error as Error);
     res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: 'Error obteniendo estadísticas' });
     return;
+  }
+
+  // Retiros aprobados (fuente de verdad para montos ya enviados al driver)
+  let approvedWithdrawalsAmount = 0;
+  if (profile?.role === 'driver') {
+    const { data: approvedWithdrawals } = await adminAny
+      .from('withdrawal_requests')
+      .select('amount')
+      .eq('user_id', user.sub)
+      .eq('status', 'approved');
+    approvedWithdrawalsAmount = approvedWithdrawals?.reduce(
+      (sum: number, r: { amount: number }) => sum + (Number(r?.amount) || 0),
+      0
+    ) || 0;
   }
 
   let availableBalance = 0;
@@ -368,13 +383,14 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
         ?.filter(p => (p.shipment as any)?.current_status === 'delivered')
         .reduce((sum, p) => sum + (p.driver_amount || 0), 0) || 0;
 
-      // Reservar transferencias pendientes/completadas para evitar doble retiro.
-      const reservedOrPaid = transfers
-        ?.filter((t: any) => t.status === 'completed' || t.status === 'pending')
+      // Reservar: transferencias de pagos (payment_id NOT null) + retiros aprobados
+      const transfersFromPayments = transfers?.filter((t: any) => t.payment_id != null) || [];
+      const reservedFromTransfers = transfersFromPayments
+        .filter((t: any) => t.status === 'completed' || t.status === 'pending')
         .reduce((sum: number, t: any) => sum + (Number(t?.amount) || 0), 0) || 0;
+      const reservedOrPaid = reservedFromTransfers + approvedWithdrawalsAmount;
 
-      // Restar retiros comprometidos (pending, needs_details, in_process legacy)
-      const adminAny = admin as any;
+      // Retiros pendientes (comprometidos, aún no aprobados)
       const { data: withdrawalReqs } = await adminAny
         .from('withdrawal_requests')
         .select('amount')
@@ -397,12 +413,16 @@ router.get('/stats', authMiddleware, asyncHandler(async (req, res) => {
   const failed = transfers?.filter((t: any) => t.status === 'failed').length || 0;
 
   const totalAmount = transfers?.reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
-  
-  const pendingAmount = profile?.role === 'driver' 
-    ? availableBalance 
+
+  // completedAmount: transferencias de pagos completadas + retiros aprobados (fuente withdrawal_requests)
+  const completedFromTransfersPaymentsOnly = transfers?.filter(
+    (t: any) => t.status === 'completed' && t.payment_id != null
+  ).reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
+  const completedAmount = completedFromTransfersPaymentsOnly + approvedWithdrawalsAmount;
+
+  const pendingAmount = profile?.role === 'driver'
+    ? availableBalance
     : transfers?.filter((t: any) => t.status === 'pending').reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
-    
-  const completedAmount = transfers?.filter((t: any) => t.status === 'completed').reduce((sum: number, t: any) => sum + parseFloat(t.amount.toString()), 0) || 0;
 
   res.json({
     total,
