@@ -442,4 +442,84 @@ router.post('/me/location', asyncHandler(async (req, res) => {
   }
 }));
 
+/**
+ * DELETE /profile/me
+ * Elimina la cuenta del usuario y todos sus datos (cumplimiento regulaciones / derecho al olvido).
+ * Orden de borrado respetando FKs.
+ */
+router.delete('/me', asyncHandler(async (req, res) => {
+  const user = req.user as { sub: string } | undefined;
+  if (!user?.sub) {
+    res.status(StatusCodes.UNAUTHORIZED).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  const userId = user.sub;
+  const admin = createAdminClient();
+
+  try {
+    // 1. Mensajes donde el usuario es emisor o receptor
+    await admin.from('messages').delete().eq('sender_id', userId);
+    await admin.from('messages').delete().eq('receiver_id', userId);
+
+    // 2. Estados de envío creados por el usuario
+    await admin.from('shipment_statuses').delete().eq('created_by', userId);
+
+    // 3. Asignaciones donde el usuario es conductor
+    await admin.from('driver_assignments').delete().eq('driver_id', userId);
+
+    // 4. Envíos creados por el usuario: borrar dependencias y luego los envíos
+    const { data: myShipments } = await admin.from('shipments').select('id').eq('created_by', userId);
+    const shipmentIds = (myShipments ?? []).map((s: { id: string }) => s.id);
+
+    if (shipmentIds.length > 0) {
+      await admin.from('messages').delete().in('shipment_id', shipmentIds);
+      await admin.from('shipment_statuses').delete().in('shipment_id', shipmentIds);
+      await admin.from('driver_assignments').delete().in('shipment_id', shipmentIds);
+
+      const { data: paymentsForShipments } = await admin.from('payments').select('id').in('shipment_id', shipmentIds);
+      const paymentIdsForShipments = (paymentsForShipments ?? []).map((p: { id: string }) => p.id);
+      if (paymentIdsForShipments.length > 0) {
+        await admin.from('driver_transfers').delete().in('payment_id', paymentIdsForShipments);
+      }
+      await admin.from('payments').delete().in('shipment_id', shipmentIds);
+      await admin.from('shipments').delete().in('id', shipmentIds);
+    }
+
+    // 5. Transferencias del conductor (restantes)
+    await admin.from('driver_transfers').delete().eq('driver_id', userId);
+
+    // 6. Pagos donde el usuario es pagador o conductor
+    await admin.from('payments').delete().eq('payer_id', userId);
+    await admin.from('payments').delete().eq('driver_id', userId);
+
+    // 7. Solicitudes de retiro
+    await admin.from('withdrawal_requests').delete().eq('user_id', userId);
+
+    // 8. Tokens push
+    await admin.from('push_tokens').delete().eq('user_id', userId);
+
+    // 9. Perfil
+    await admin.from('profiles').delete().eq('id', userId);
+
+    // 10. Usuario en Supabase Auth
+    const { error: authError } = await admin.auth.admin.deleteUser(userId);
+    if (authError) {
+      logger.error('Error deleting auth user', authError as Error, { userId });
+      res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+        error: 'No se pudo eliminar la cuenta. Intenta de nuevo más tarde.',
+      });
+      return;
+    }
+
+    res.status(StatusCodes.NO_CONTENT).send();
+  } catch (error: any) {
+    logger.error('Error in delete account', error as Error, { userId });
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: 'Error al eliminar la cuenta',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+}));
+
 export const profileRouter = router;
